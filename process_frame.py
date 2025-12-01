@@ -1,0 +1,861 @@
+import time
+import cv2
+import numpy as np
+from utils import find_angle, get_landmark_features, draw_text, draw_dotted_line, draw_dotted_hline, get_landmark_array
+
+__all__ = ['ProcessFrame']
+
+
+class ProcessFrame:
+    """
+      - derive angles and draw guides
+      - track squat states and inactivity
+      - detect key cues (torso forward, knees past toes, heel lift)
+      - summarize reps with peak/last snapshots
+    """
+    def __init__(self, thresholds, flip_frame = False):
+        """Configure drawing, thresholds, and state trackers."""
+        
+        # Set if frame should be flipped or not.
+        self.flip_frame = flip_frame
+
+        # self.thresholds
+        self.thresholds = thresholds
+
+        # Font type.
+        self.font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # line type
+        self.linetype = cv2.LINE_AA
+
+        # set radius to draw arc
+        self.radius = 20
+        self.COLORS = {
+                        'blue'       : (0, 127, 255),   
+                        'red'        : (0, 64, 255),    
+                        'green'      : (0, 255, 0),    
+                        'light_green': (147, 58, 255),  
+                        'yellow'     : (0, 255, 255),   
+                        'magenta'    : (255, 0, 255),   
+                        'white'      : (255, 255, 255), 
+                        'cyan'       : (255, 255, 0),   
+                        'light_blue' : (219, 112, 147)  
+                      }
+
+
+
+        # ---------------- MediaPipe landmark index maps ----------------
+        self.dict_features = {}
+        self.left_features = {
+                                'shoulder': 11,
+                                'elbow'   : 13,
+                                'hip'     : 23,
+                                'knee'    : 25,
+                                'ankle'   : 27,
+                                'heel'    : 29,
+                                'foot'    : 31,
+                                'wrist'   : 15
+                             }
+
+        self.right_features = {
+                                'shoulder': 12,
+                                'elbow'   : 14,
+                                'hip'     : 24,
+                                'knee'    : 26,
+                                'ankle'   : 28,
+                                'heel'    : 30,
+                                'foot'    : 32,
+                                'wrist'   : 16
+                              }
+
+        self.dict_features['left'] = self.left_features
+        self.dict_features['right'] = self.right_features
+        self.dict_features['nose'] = 0
+
+        
+        # ------------------ State machine and counters ------------------
+        self.state_tracker = {
+            'state_seq': [],
+
+            'start_inactive_time': time.perf_counter(),
+            'start_inactive_time_front': time.perf_counter(),
+            'INACTIVE_TIME': 0.0,
+            'INACTIVE_TIME_FRONT': 0.0,
+            'BODY_RATIO_LOGGED': False,
+
+            # 0 --> Bend Backwards, 1 --> Bend Forward, 2 --> Keep shin straight, 3 --> Deep squat
+            'DISPLAY_TEXT' : np.full((4,), False),
+            'COUNT_FRAMES' : np.zeros((4,), dtype=np.int64),
+
+            'LOWER_HIPS': False,
+
+            'INCORRECT_POSTURE': False,
+
+            'prev_state': None,
+            'curr_state':None,
+
+            'SQUAT_COUNT': 0,
+			'IMPROPER_SQUAT':0,
+            
+        }
+        
+        # Headstart delay (seconds) before logging max angles
+        self.headstart_sec = 4
+        self._created_at = time.perf_counter()
+        
+        # ---------------- Per-rep maxima (for summary) -----------------
+        self.angle_maxima = {
+            'back': 0,
+            'knee': 0,
+            'ankle': 0,
+            'heel': 0
+        }
+        # Minimum angle required before logging updates
+        self.min_log_angle = {
+            'back': 20,  
+            'knee': 0,
+            'ankle': 0,
+            'heel': 0
+        }
+        self.rep_index = 0
+        self.rep_summaries = []
+        # Per-rep binary flags for cues
+        self.rep_flags = {
+            'torso_forward': False,     # shoulder beyond knee at any time during s2
+            'knees_past_toes': False,   # knee beyond toes at any time during s2
+            'curve_spine': False        # upper arm arc < threshold at any time during s2
+        }
+        # Last and peak snapshots for cues (used in rep summary)
+        self.event_last = {
+            'torso_forward': None,        # {'ms': int, 'hip': int, 'knee': int, 'ankle': int, 'heel': int}
+            'knees_past_toes': None
+        }
+        self.event_peak = {
+            'torso_forward': None,
+            'knees_past_toes': None
+        }
+        self.EVENT_PEAK_THRESH = {'hip': 45, 'ankle': 45, 'heel': 25}
+        # Tuning: offsets for forward checks (higher = less sensitive)
+        self.knee_toe_offset_ratio = 0.05     
+        self.knee_toe_min_px = 16           
+        self.shoulder_knee_offset_ratio = 0.05
+        self.shoulder_knee_min_px = 16
+        # Threshold (deg) to flag heel lifting
+        self.heel_lift_thresh = 30
+        self.smooth_alpha_common = 0.25
+        self.visibility_thresh_common = 0.5
+        self.max_jump_ratio = 0.05 
+        self.prev_coords = {'left': {}, 'right': {}}
+        # Threshold for curve spine (upper arm arc) and per-rep minimum tracker
+        self.curve_spine_thresh = 30
+        self.upper_arm_min_angle = None
+        # ---------------- Landmark smoothing (elbow) -------------------
+        self.prev_elbow_coord = None
+        self.prev_upper_side = None 
+        self.elbow_smooth_alpha = 0.25
+        self.elbow_visibility_thresh = 0.5
+        
+        
+        self.FEEDBACK_ID_MAP = {
+                                0: ('BEND BACKWARDS', 215, (0, 128, 255)),   
+                                1: ('BEND FORWARD', 215, (0, 128, 255)),     
+                                2: ('KNEE FALLING OVER TOE', 170, (255, 0, 128)), 
+                                3: ('SQUAT TOO DEEP', 125, (255, 0, 128))    
+                               }
+
+        
+
+
+    def _get_state(self, knee_angle):
+        """Map knee vertical angle into coarse squat state s1/s2/s3."""
+
+        normal_lo, normal_hi = self.thresholds['HIP_KNEE_VERT']['NORMAL']
+        trans_lo, trans_hi   = self.thresholds['HIP_KNEE_VERT']['TRANS']
+        pass_lo, pass_hi     = self.thresholds['HIP_KNEE_VERT']['PASS']
+
+        if knee_angle <= normal_hi:
+            return 's1'
+        elif knee_angle <= trans_hi:
+            return 's2'
+        else:
+            return 's3'
+
+
+
+    
+    def _update_state_sequence(self, state):
+        """Maintain valid state sequence within a rep (s2 then s3)."""
+
+        if state == 's2':
+            if (('s3' not in self.state_tracker['state_seq']) and (self.state_tracker['state_seq'].count('s2'))==0) or \
+                    (('s3' in self.state_tracker['state_seq']) and (self.state_tracker['state_seq'].count('s2')==1)):
+                        self.state_tracker['state_seq'].append(state)
+            
+
+        elif state == 's3':
+            if (state not in self.state_tracker['state_seq']) and 's2' in self.state_tracker['state_seq']: 
+                self.state_tracker['state_seq'].append(state)
+
+            
+
+
+    def _show_feedback(self, frame, c_frame, dict_maps, lower_hips_disp):
+        """Render transient text feedback (no-op override point)."""
+        return frame
+    def _log_angle(self, key, angle_value):
+        """Track maximum angle per key during an active squat window."""
+        if (time.perf_counter() - self._created_at) < self.headstart_sec:
+            return
+        if self.state_tracker.get('curr_state') not in ('s2','s3'):
+            return
+        if angle_value >= self.min_log_angle.get(key, 0) and angle_value > self.angle_maxima.get(key, 0):
+            self.angle_maxima[key] = angle_value
+
+    def _reset_angle_maxima(self):
+        """Reset per-rep maxima."""
+        self.angle_maxima['back'] = 0
+        self.angle_maxima['knee'] = 0
+        self.angle_maxima['ankle'] = 0
+        self.angle_maxima['heel'] = 0
+    
+    def _smooth_landmark(self, side, name, lm_index, kp_results, frame_width, frame_height):
+        """
+        Smooth a single landmark:
+          - gate by visibility
+          - clamp max jump per frame
+          - exponential moving average
+        Returns an int np.array([x, y]).
+        """
+        curr = get_landmark_array(kp_results, lm_index, frame_width, frame_height)
+        vis = getattr(kp_results[lm_index], 'visibility', 1.0)
+        prev = self.prev_coords[side].get(name)
+        if vis < self.visibility_thresh_common and prev is not None:
+            return prev
+        if prev is None:
+            smoothed = curr
+        else:
+            max_jump_px = max(8, int(self.max_jump_ratio * frame_width))
+            dx = curr[0] - prev[0]
+            dy = curr[1] - prev[1]
+            if abs(dx) > max_jump_px:
+                dx = max_jump_px if dx > 0 else -max_jump_px
+            if abs(dy) > max_jump_px:
+                dy = max_jump_px if dy > 0 else -max_jump_px
+            clamped = np.array([prev[0] + dx, prev[1] + dy])
+            alpha = self.smooth_alpha_common
+            sm = (1.0 - alpha) * prev + alpha * clamped
+            smoothed = np.array([int(sm[0]), int(sm[1])])
+        self.prev_coords[side][name] = smoothed
+        return smoothed
+
+    def _finalize_rep(self):
+        """Build and store the rep summary string, including peaks and flags."""
+        knee_reached_90 = self.angle_maxima['knee'] >= 90
+        self.rep_index += 1
+        tf_evt = self.event_last.get('torso_forward')
+        tf_str = None if tf_evt is None else f"{tf_evt['ms']}ms(hip={tf_evt['hip']},knee={tf_evt['knee']},ankle={tf_evt['ankle']},heel={tf_evt['heel']})"
+        kpt_evt = self.event_last.get('knees_past_toes')
+        kpt_str = None if kpt_evt is None else f"{kpt_evt['ms']}ms(hip={kpt_evt['hip']},knee={kpt_evt['knee']},ankle={kpt_evt['ankle']},heel={kpt_evt['heel']})"
+        max_heel = self.angle_maxima['heel']
+        heels_lifting_str = f"heels_lifting={'YES' if max_heel > self.heel_lift_thresh else 'NO'}({max_heel}°)"
+        min_upper_arm = 180 if self.upper_arm_min_angle is None else self.upper_arm_min_angle
+        curve_spine_str = f"curve_spine={'YES' if (self.rep_flags.get('curve_spine', False) and min_upper_arm < self.curve_spine_thresh) else 'NO'}({min_upper_arm}°)"
+        parts = [
+            f"[REP: {self.rep_index}] Summary:",
+            f"torso_beyond_knee={'YES' if self.rep_flags['torso_forward'] else 'NO'}",
+            f"knees_past_toes={'YES' if self.rep_flags['knees_past_toes'] else 'NO'}",
+            heels_lifting_str,
+            curve_spine_str,
+            f"max_back={self.angle_maxima['back']}°",
+            f"max_knee={self.angle_maxima['knee']}°",
+            f"max_ankle={self.angle_maxima['ankle']}°",
+            f"knee_reached_90={'YES' if knee_reached_90 else 'NO'}",
+        ]
+        # Prefer peak snapshot (meeting thresholds) over last occurrence
+        tf_peak = self.event_peak.get('torso_forward')
+        tf_peak_str = None if tf_peak is None else f"{tf_peak['ms']}ms(hip={tf_peak['hip']},knee={tf_peak['knee']},ankle={tf_peak['ankle']},heel={tf_peak['heel']})"
+        kpt_peak = self.event_peak.get('knees_past_toes')
+        kpt_peak_str = None if kpt_peak is None else f"{kpt_peak['ms']}ms(hip={kpt_peak['hip']},knee={kpt_peak['knee']},ankle={kpt_peak['ankle']},heel={kpt_peak['heel']})"
+        if self.rep_flags['torso_forward'] and (tf_peak_str is not None or tf_str is not None):
+            parts.insert(3, f"torso_beyond_knee_peak={tf_peak_str or tf_str}")
+        if self.rep_flags['knees_past_toes'] and (kpt_peak_str is not None or kpt_str is not None):
+            parts.insert(4, f"knees_past_toes_peak={kpt_peak_str or kpt_str}")
+        summary = " ".join(parts)
+        print(summary, flush=True)
+        self.rep_summaries.append(summary)
+
+
+
+
+    def process(self, frame: np.array, pose):
+        """
+          - estimate landmarks
+          - choose the visible side
+          - compute/draw geometry
+          - update cues, state, and summaries
+        Returns: (frame, optional_sound_key)
+        """
+        play_sound = None
+       
+
+        frame_height, frame_width, _ = frame.shape
+
+        # Process the image.
+        keypoints = pose.process(frame)
+
+        if keypoints.pose_landmarks:
+            ps_lm = keypoints.pose_landmarks
+
+            nose_coord = get_landmark_features(ps_lm.landmark, self.dict_features, 'nose', frame_width, frame_height)
+            left_shldr_coord, left_hip_coord, left_knee_coord, left_ankle_coord, left_heel_coord, left_foot_coord = \
+                                get_landmark_features(ps_lm.landmark, self.dict_features, 'left', frame_width, frame_height)
+            right_shldr_coord, right_hip_coord, right_knee_coord, right_ankle_coord, right_heel_coord, right_foot_coord = \
+                                get_landmark_features(ps_lm.landmark, self.dict_features, 'right', frame_width, frame_height)
+
+            offset_angle = find_angle(left_shldr_coord, right_shldr_coord, nose_coord)
+
+            if offset_angle > self.thresholds['OFFSET_THRESH']:
+                
+                display_inactivity = False
+
+                end_time = time.perf_counter()
+                self.state_tracker['INACTIVE_TIME_FRONT'] += end_time - self.state_tracker['start_inactive_time_front']
+                self.state_tracker['start_inactive_time_front'] = end_time
+
+                if self.state_tracker['INACTIVE_TIME_FRONT'] >= self.thresholds['INACTIVE_THRESH']:
+                    self.state_tracker['SQUAT_COUNT'] = 0
+                    self.state_tracker['IMPROPER_SQUAT'] = 0
+                    display_inactivity = True
+
+                cv2.circle(frame, nose_coord, 7, self.COLORS['white'], -1)
+                cv2.circle(frame, left_shldr_coord, 7, self.COLORS['yellow'], -1)
+                cv2.circle(frame, right_shldr_coord, 7, self.COLORS['magenta'], -1)
+
+                if self.flip_frame:
+                    frame = cv2.flip(frame, 1)
+
+                if display_inactivity:
+                    # cv2.putText(frame, 'Resetting SQUAT_COUNT due to inactivity!!!', (10, frame_height - 90), 
+                    #             self.font, 0.5, self.COLORS['blue'], 2, lineType=self.linetype)
+                    play_sound = 'reset_counters'
+                    self.state_tracker['INACTIVE_TIME_FRONT'] = 0.0
+                    self.state_tracker['start_inactive_time_front'] = time.perf_counter()
+
+
+
+                # Reset inactive times for side view.
+                self.state_tracker['start_inactive_time'] = time.perf_counter()
+                self.state_tracker['INACTIVE_TIME'] = 0.0
+                self.state_tracker['prev_state'] =  None
+                self.state_tracker['curr_state'] = None
+            
+            # Camera is aligned properly.
+            else:
+
+                self.state_tracker['INACTIVE_TIME_FRONT'] = 0.0
+                self.state_tracker['start_inactive_time_front'] = time.perf_counter()
+
+
+                dist_l_sh_hip = abs(left_foot_coord[1] - left_shldr_coord[1])
+                dist_r_sh_hip = abs(right_foot_coord[1] - right_shldr_coord[1])
+
+                shldr_coord = None
+                
+                hip_coord = None
+                knee_coord = None
+                ankle_coord = None
+                heel_coord = None
+                foot_coord = None
+
+                if dist_l_sh_hip > dist_r_sh_hip:
+                    hip_coord = self._smooth_landmark('left', 'hip', self.left_features['hip'], ps_lm.landmark, frame_width, frame_height)
+                    knee_coord = self._smooth_landmark('left', 'knee', self.left_features['knee'], ps_lm.landmark, frame_width, frame_height)
+                    ankle_coord = self._smooth_landmark('left', 'ankle', self.left_features['ankle'], ps_lm.landmark, frame_width, frame_height)
+                    heel_coord = self._smooth_landmark('left', 'heel', self.left_features['heel'], ps_lm.landmark, frame_width, frame_height)
+                    foot_coord = self._smooth_landmark('left', 'foot', self.left_features['foot'], ps_lm.landmark, frame_width, frame_height)
+                    shldr_coord = self._smooth_landmark('left', 'shoulder', self.left_features['shoulder'], ps_lm.landmark, frame_width, frame_height)
+                    current_side = 'left'
+                    if self.prev_upper_side != current_side:
+                        self.prev_elbow_coord = None
+                        self.prev_upper_side = current_side
+                    elbow_idx = self.left_features['elbow']
+                    elbow_vis = getattr(ps_lm.landmark[elbow_idx], 'visibility', 1.0)
+                    elbow_curr = get_landmark_array(ps_lm.landmark, elbow_idx, frame_width, frame_height)
+                    if elbow_vis < self.elbow_visibility_thresh and self.prev_elbow_coord is not None:
+                        elbow_coord = self.prev_elbow_coord
+                    else:
+                        if self.prev_elbow_coord is None:
+                            elbow_coord = elbow_curr
+                        else:
+                            alpha = self.elbow_smooth_alpha
+                            smoothed = (1.0 - alpha) * self.prev_elbow_coord + alpha * elbow_curr
+                            elbow_coord = np.array([int(smoothed[0]), int(smoothed[1])])
+                    self.prev_elbow_coord = elbow_coord
+
+                    multiplier = -1
+                                     
+                
+                else:
+                    hip_coord = self._smooth_landmark('right', 'hip', self.right_features['hip'], ps_lm.landmark, frame_width, frame_height)
+                    knee_coord = self._smooth_landmark('right', 'knee', self.right_features['knee'], ps_lm.landmark, frame_width, frame_height)
+                    ankle_coord = self._smooth_landmark('right', 'ankle', self.right_features['ankle'], ps_lm.landmark, frame_width, frame_height)
+                    heel_coord = self._smooth_landmark('right', 'heel', self.right_features['heel'], ps_lm.landmark, frame_width, frame_height)
+                    foot_coord = self._smooth_landmark('right', 'foot', self.right_features['foot'], ps_lm.landmark, frame_width, frame_height)
+                    shldr_coord = self._smooth_landmark('right', 'shoulder', self.right_features['shoulder'], ps_lm.landmark, frame_width, frame_height)
+                    current_side = 'right'
+                    # Reset smoothing when side switches
+                    if self.prev_upper_side != current_side:
+                        self.prev_elbow_coord = None
+                        self.prev_upper_side = current_side
+                    elbow_idx = self.right_features['elbow']
+                    elbow_vis = getattr(ps_lm.landmark[elbow_idx], 'visibility', 1.0)
+                    elbow_curr = get_landmark_array(ps_lm.landmark, elbow_idx, frame_width, frame_height)
+                    if elbow_vis < self.elbow_visibility_thresh and self.prev_elbow_coord is not None:
+                        elbow_coord = self.prev_elbow_coord
+                    else:
+                        if self.prev_elbow_coord is None:
+                            elbow_coord = elbow_curr
+                        else:
+                            alpha = self.elbow_smooth_alpha
+                            smoothed = (1.0 - alpha) * self.prev_elbow_coord + alpha * elbow_curr
+                            elbow_coord = np.array([int(smoothed[0]), int(smoothed[1])])
+                    self.prev_elbow_coord = elbow_coord
+
+                    multiplier = 1
+                    
+                # ------------------- Shoulder vertical guide and torso-forward check --------------
+                short_end = min(frame_height - 1, shldr_coord[1] + 32)
+                draw_dotted_line(frame, shldr_coord, start=shldr_coord[1], end=short_end, line_color=self.COLORS['blue'])
+                hline_len = max(60, int(0.1 * frame_width))
+                if multiplier == 1:
+                    hstart_x = max(0, shldr_coord[0] - hline_len)
+                    hend_x = shldr_coord[0]
+                else:
+                    hstart_x = shldr_coord[0]
+                    hend_x = min(frame_width - 1, shldr_coord[0] + hline_len)
+                draw_dotted_hline(frame, shldr_coord[1], min(hstart_x, hend_x), max(hstart_x, hend_x), self.COLORS['blue'])
+                early_toe_tol = max(self.knee_toe_min_px, int(self.knee_toe_offset_ratio * frame_width))
+                torso_too_forward = (shldr_coord[0] > foot_coord[0] + early_toe_tol) if (multiplier == 1) else (shldr_coord[0] < foot_coord[0] - early_toe_tol)
+                # ------------------- Knee-to-toes inline guide and check --------------
+                toes_start = max(0, foot_coord[1] - 32)
+                draw_dotted_line(frame, foot_coord, start=toes_start, end=foot_coord[1], line_color=self.COLORS['blue'])
+                # Check if knee is past toes (too far forward)
+                px_tolerance = max(self.knee_toe_min_px, int(self.knee_toe_offset_ratio * frame_width))
+                knee_past_toes = (knee_coord[0] > foot_coord[0] + px_tolerance) if (multiplier == 1) else (knee_coord[0] < foot_coord[0] - px_tolerance)
+
+                # ------------------- Verical Angle calculation --------------
+                
+                hip_vertical_angle = find_angle(shldr_coord, np.array([hip_coord[0], 0]), hip_coord)
+                self._log_angle('back', hip_vertical_angle)
+                cv2.ellipse(frame, hip_coord, (30, 30), 
+                            angle = 0, startAngle = -90, endAngle = -90+multiplier*hip_vertical_angle, 
+                            color = self.COLORS['white'], thickness = 3, lineType = self.linetype)
+
+                # Short hip guide: ~5 dots above
+                short_start_hip = max(0, hip_coord[1] - 32)
+                draw_dotted_line(frame, hip_coord, start=short_start_hip, end=hip_coord[1], line_color=self.COLORS['blue'])
+
+
+
+
+                knee_vertical_angle = find_angle(hip_coord, np.array([knee_coord[0], 0]), knee_coord)
+                self._log_angle('knee', knee_vertical_angle)
+                cv2.ellipse(frame, knee_coord, (20, 20), 
+                            angle = 0, startAngle = -90, endAngle = -90-multiplier*knee_vertical_angle, 
+                            color = self.COLORS['white'], thickness = 3,  lineType = self.linetype)
+
+                # Short knee guides: ~5 dots above and ~5 dots below
+                short_start_knee = max(0, knee_coord[1] - 32)
+                short_end_knee = min(frame_height - 1, knee_coord[1] + 32)
+                draw_dotted_line(frame, knee_coord, start=short_start_knee, end=knee_coord[1], line_color=self.COLORS['blue'])
+                draw_dotted_line(frame, knee_coord, start=knee_coord[1], end=short_end_knee, line_color=self.COLORS['blue'])
+
+
+
+                ankle_vertical_angle = find_angle(knee_coord, np.array([ankle_coord[0], 0]), ankle_coord)
+                self._log_angle('ankle', ankle_vertical_angle)
+                cv2.ellipse(frame, ankle_coord, (30, 30),
+                            angle = 0, startAngle = -90, endAngle = -90 + multiplier*ankle_vertical_angle,
+                            color = self.COLORS['white'], thickness = 3,  lineType=self.linetype)
+
+                # Ankle: short guide above only (~5 dots)
+                short_start_ankle = max(0, ankle_coord[1] - 32)
+                draw_dotted_line(frame, ankle_coord, start=short_start_ankle, end=ankle_coord[1], line_color=self.COLORS['blue'])
+
+                # Draw horizontal ground reference (toes level) only between toes and heel
+                start_x = min(heel_coord[0], foot_coord[0])
+                end_x = max(heel_coord[0], foot_coord[0])
+                draw_dotted_hline(frame, foot_coord[1], start_x, end_x, self.COLORS['blue'])
+
+                # ------------------------------------------------------------
+        
+                
+                # Join landmarks.
+                
+                cv2.line(frame, shldr_coord, hip_coord, self.COLORS['green'], 4, lineType=self.linetype)
+                cv2.line(frame, knee_coord, hip_coord, self.COLORS['green'], 4,  lineType=self.linetype)
+                cv2.line(frame, ankle_coord, knee_coord,self.COLORS['green'], 4,  lineType=self.linetype)
+                cv2.line(frame, ankle_coord, heel_coord, self.COLORS['green'], 4,  lineType=self.linetype)
+                cv2.line(frame, ankle_coord, foot_coord, self.COLORS['green'], 4,  lineType=self.linetype)
+                cv2.line(frame, heel_coord, foot_coord, self.COLORS['green'], 4,  lineType=self.linetype)
+                cv2.line(frame, shldr_coord, elbow_coord, self.COLORS['green'], 4,  lineType=self.linetype)
+                
+                # Plot landmark points
+                cv2.circle(frame, shldr_coord, 7, self.COLORS['yellow'], -1,  lineType=self.linetype)
+                
+                cv2.circle(frame, hip_coord, 7, self.COLORS['yellow'], -1,  lineType=self.linetype)
+                cv2.circle(frame, knee_coord, 7, self.COLORS['yellow'], -1,  lineType=self.linetype)
+                cv2.circle(frame, ankle_coord, 7, self.COLORS['yellow'], -1,  lineType=self.linetype)
+                cv2.circle(frame, heel_coord, 7, self.COLORS['yellow'], -1,  lineType=self.linetype)
+                cv2.circle(frame, foot_coord, 7, self.COLORS['yellow'], -1,  lineType=self.linetype)
+                cv2.circle(frame, elbow_coord, 7, self.COLORS['yellow'], -1,  lineType=self.linetype)
+                behind_dx = -10 if (multiplier == 1) else 10
+                ua_raw = find_angle(elbow_coord, np.array([shldr_coord[0] + behind_dx, shldr_coord[1]]), shldr_coord)
+                upper_arm_horiz_angle = min(ua_raw, 180 - ua_raw)
+                base_angle = 180 if (multiplier == 1) else 0
+                cv2.ellipse(
+                    frame,
+                    shldr_coord,
+                    (25, 25),
+                    angle = 0,
+                    startAngle = int(base_angle),
+                    endAngle = int(base_angle + (-multiplier) * upper_arm_horiz_angle),
+                    color = self.COLORS['white'],
+                    thickness = 3,
+                    lineType = self.linetype
+                )
+                text_x = shldr_coord[0] - 35 if (multiplier == 1) else shldr_coord[0] + 15
+                text_y = shldr_coord[1] - 10
+                cv2.putText(frame, str(int(upper_arm_horiz_angle)), (text_x, text_y), self.font, 0.6, self.COLORS['yellow'], 2, lineType=self.linetype)
+                
+
+                current_state = self._get_state(int(knee_vertical_angle))
+                if not current_state:
+                    current_state = self.state_tracker.get('prev_state') or 's1'
+                self.state_tracker['curr_state'] = current_state
+                self._update_state_sequence(current_state)
+
+                # Log maxima/minima during active squat (state s2 and s3)
+                if current_state in ('s2','s3'):
+                    self._log_angle('back', hip_vertical_angle)
+                    self._log_angle('knee', knee_vertical_angle)
+                    self._log_angle('ankle', ankle_vertical_angle)
+                    # Track minimum upper-arm horizontal angle and flag curve spine
+                    if (time.perf_counter() - self._created_at) >= self.headstart_sec:
+                        if (self.upper_arm_min_angle is None) or (upper_arm_horiz_angle < self.upper_arm_min_angle):
+                            self.upper_arm_min_angle = int(upper_arm_horiz_angle)
+                        if upper_arm_horiz_angle < self.curve_spine_thresh:
+                            self.rep_flags['curve_spine'] = True
+                    # On entering s2, reset per-rep flags
+                    if self.state_tracker.get('prev_state') == 's1' and current_state == 's2':
+                        self.rep_flags['torso_forward'] = False
+                        self.rep_flags['knees_past_toes'] = False
+                        self.rep_flags['curve_spine'] = False
+                        self.upper_arm_min_angle = None
+                        # Compute body proportions once per session (first s1->s2 only)
+                        if not self.state_tracker.get('BODY_RATIO_LOGGED', False):
+                            # Torso: eyebrow (approx as midpoint of eyes) to hip; Legs: hip to toes (foot)
+                            eye_left  = get_landmark_array(ps_lm.landmark, 2, frame_width, frame_height)   # left_eye
+                            eye_right = get_landmark_array(ps_lm.landmark, 5, frame_width, frame_height)   # right_eye
+                            eyebrow_pt = (eye_left.astype(float) + eye_right.astype(float)) / 2.0
+                            crotch_pt = hip_coord.astype(float)
+                            torso_len = float(np.linalg.norm(eyebrow_pt - crotch_pt))
+                            leg_len = float(np.linalg.norm(crotch_pt - foot_coord))
+                            ratio = (leg_len / torso_len) if torso_len > 0 else 0.0
+                            if torso_len > 0:
+                                which = "LONGER_LEGS" if ratio >= 1.2 else ("LONGER_TORSO" if ratio <= 0.85 else "BALANCED")
+                                print(f"[PRE-SQUAT] torso_len={torso_len:.1f}px leg_len={leg_len:.1f}px ratio={ratio:.2f} type={which}", flush=True)
+                                self.state_tracker['BODY_RATIO_LOGGED'] = True
+                        
+                        
+                        
+                    toe_offset_px = max(self.knee_toe_min_px, int(self.knee_toe_offset_ratio * frame_width))
+                    shoulder_offset_px = max(self.shoulder_knee_min_px, int(self.shoulder_knee_offset_ratio * frame_width))
+                    torso_too_forward_now = (shldr_coord[0] > foot_coord[0] + toe_offset_px) if (multiplier == 1) else (shldr_coord[0] < foot_coord[0] - toe_offset_px)
+                    knee_past_toes_now = (knee_coord[0] > foot_coord[0] + toe_offset_px) if (multiplier == 1) else (knee_coord[0] < foot_coord[0] - toe_offset_px)
+                    self.rep_flags['torso_forward'] = self.rep_flags['torso_forward'] or torso_too_forward_now
+                    self.rep_flags['knees_past_toes'] = self.rep_flags['knees_past_toes'] or knee_past_toes_now
+                    now_ms = int((time.perf_counter() - self._created_at) * 1000)
+                    heel_lift_angle_raw_evt = find_angle(foot_coord, np.array([heel_coord[0] + 10, heel_coord[1]]), heel_coord)
+                    heel_lift_angle_evt = min(heel_lift_angle_raw_evt, 180 - heel_lift_angle_raw_evt)
+                    if torso_too_forward_now:
+                        snapshot_tf = {
+                            'ms': now_ms,
+                            'hip': int(hip_vertical_angle),
+                            'knee': int(knee_vertical_angle),
+                            'ankle': int(ankle_vertical_angle),
+                            'heel': int(heel_lift_angle_evt)
+                        }
+                        self.event_last['torso_forward'] = snapshot_tf
+                        score_tf = 0
+                        if snapshot_tf['hip'] >= self.EVENT_PEAK_THRESH['hip']:
+                            score_tf = max(score_tf, snapshot_tf['hip'])
+                        if snapshot_tf['ankle'] >= self.EVENT_PEAK_THRESH['ankle']:
+                            score_tf = max(score_tf, snapshot_tf['ankle'])
+                        if snapshot_tf['heel'] >= self.EVENT_PEAK_THRESH['heel']:
+                            score_tf = max(score_tf, snapshot_tf['heel'])
+                        if score_tf > 0:
+                            prev_peak = self.event_peak.get('torso_forward')
+                            prev_score = -1 if prev_peak is None else prev_peak.get('score', -1)
+                            if score_tf > prev_score:
+                                snapshot_tf_peak = dict(snapshot_tf)
+                                snapshot_tf_peak['score'] = score_tf
+                                self.event_peak['torso_forward'] = snapshot_tf_peak
+                    if knee_past_toes_now:
+                        snapshot_kpt = {
+                            'ms': now_ms,
+                            'hip': int(hip_vertical_angle),
+                            'knee': int(knee_vertical_angle),
+                            'ankle': int(ankle_vertical_angle),
+                            'heel': int(heel_lift_angle_evt)
+                        }
+                        self.event_last['knees_past_toes'] = snapshot_kpt
+                        # Update peak if thresholds are exceeded
+                        score_kpt = 0
+                        if snapshot_kpt['hip'] >= self.EVENT_PEAK_THRESH['hip']:
+                            score_kpt = max(score_kpt, snapshot_kpt['hip'])
+                        if snapshot_kpt['ankle'] >= self.EVENT_PEAK_THRESH['ankle']:
+                            score_kpt = max(score_kpt, snapshot_kpt['ankle'])
+                        if snapshot_kpt['heel'] >= self.EVENT_PEAK_THRESH['heel']:
+                            score_kpt = max(score_kpt, snapshot_kpt['heel'])
+                        if score_kpt > 0:
+                            prev_peak = self.event_peak.get('knees_past_toes')
+                            prev_score = -1 if prev_peak is None else prev_peak.get('score', -1)
+                            if score_kpt > prev_score:
+                                snapshot_kpt_peak = dict(snapshot_kpt)
+                                snapshot_kpt_peak['score'] = score_kpt
+                                self.event_peak['knees_past_toes'] = snapshot_kpt_peak
+                    if current_state in ('s2','s3'):
+                        if torso_too_forward_now:
+                            draw_text(
+                                frame,
+                                'TORSO TOO FAR FORWARD',
+                                pos=(30, 110),
+                                text_color=self.COLORS['yellow'],
+                                font_scale=0.65,
+                                text_color_bg=(255, 0, 128)
+                            )
+                        if knee_past_toes_now:
+                            draw_text(
+                                frame,
+                                'KNEE PAST TOES',
+                                pos=(30, 140),
+                                text_color=self.COLORS['yellow'],
+                                font_scale=0.65,
+                                text_color_bg=(255, 0, 128)
+                            )
+
+
+
+                # -------------------------------------- COMPUTE COUNTERS --------------------------------------
+
+                if current_state == 's1':
+
+                    if len(self.state_tracker['state_seq']) == 3 and not self.state_tracker['INCORRECT_POSTURE']:
+                        self.state_tracker['SQUAT_COUNT']+=1
+                        play_sound = str(self.state_tracker['SQUAT_COUNT'])
+                        
+                    elif 's2' in self.state_tracker['state_seq'] and len(self.state_tracker['state_seq'])==1:
+                        self.state_tracker['IMPROPER_SQUAT']+=1
+                        play_sound = 'incorrect'
+
+                    elif self.state_tracker['INCORRECT_POSTURE']:
+                        self.state_tracker['IMPROPER_SQUAT']+=1
+                        play_sound = 'incorrect'
+                        
+                    
+                    self.state_tracker['state_seq'] = []
+                    self.state_tracker['INCORRECT_POSTURE'] = False
+
+
+                # ----------------------------------------------------------------------------------------------------
+
+
+
+
+                # -------------------------------------- PERFORM FEEDBACK ACTIONS --------------------------------------
+
+                else:
+                    if hip_vertical_angle > self.thresholds['HIP_THRESH'][1]:
+                        self.state_tracker['DISPLAY_TEXT'][0] = True
+                        
+
+                    elif hip_vertical_angle < self.thresholds['HIP_THRESH'][0] and \
+                         self.state_tracker['state_seq'].count('s2')==1:
+                            self.state_tracker['DISPLAY_TEXT'][1] = True
+                        
+                                        
+                    
+                    if self.thresholds['KNEE_THRESH'][0] < knee_vertical_angle < self.thresholds['KNEE_THRESH'][1] and \
+                       self.state_tracker['state_seq'].count('s2')==1:
+                        self.state_tracker['LOWER_HIPS'] = True
+
+
+                    elif knee_vertical_angle > self.thresholds['KNEE_THRESH'][2]:
+                        self.state_tracker['DISPLAY_TEXT'][3] = True
+                        self.state_tracker['INCORRECT_POSTURE'] = True
+
+                    
+                    if (ankle_vertical_angle > self.thresholds['ANKLE_THRESH']):
+                        self.state_tracker['DISPLAY_TEXT'][2] = True
+                        self.state_tracker['INCORRECT_POSTURE'] = True
+
+
+                # ----------------------------------------------------------------------------------------------------
+
+
+                
+                
+                # ----------------------------------- COMPUTE INACTIVITY ---------------------------------------------
+
+                display_inactivity = False
+                
+                if self.state_tracker['curr_state'] == self.state_tracker['prev_state']:
+
+                    end_time = time.perf_counter()
+                    self.state_tracker['INACTIVE_TIME'] += end_time - self.state_tracker['start_inactive_time']
+                    self.state_tracker['start_inactive_time'] = end_time
+
+                    if self.state_tracker['INACTIVE_TIME'] >= self.thresholds['INACTIVE_THRESH']:
+                        self.state_tracker['SQUAT_COUNT'] = 0
+                        self.state_tracker['IMPROPER_SQUAT'] = 0
+                        display_inactivity = True
+
+                
+                else:
+                    
+                    self.state_tracker['start_inactive_time'] = time.perf_counter()
+                    self.state_tracker['INACTIVE_TIME'] = 0.0
+
+                # -------------------------------------------------------------------------------------------------------
+              
+
+
+                hip_text_coord_x = hip_coord[0] + 10
+                knee_text_coord_x = knee_coord[0] + 15
+                ankle_text_coord_x = ankle_coord[0] + 10
+                heel_text_coord_x = heel_coord[0] + 10
+
+                if self.flip_frame:
+                    frame = cv2.flip(frame, 1)
+                    hip_text_coord_x = frame_width - hip_coord[0] + 10
+                    knee_text_coord_x = frame_width - knee_coord[0] + 15
+                    ankle_text_coord_x = frame_width - ankle_coord[0] + 10
+                    heel_text_coord_x = frame_width - heel_coord[0] + 10
+
+                
+                
+                if 's3' in self.state_tracker['state_seq'] or current_state == 's1':
+                    self.state_tracker['LOWER_HIPS'] = False
+
+                self.state_tracker['COUNT_FRAMES'][self.state_tracker['DISPLAY_TEXT']]+=1
+
+                frame = self._show_feedback(frame, self.state_tracker['COUNT_FRAMES'], self.FEEDBACK_ID_MAP, self.state_tracker['LOWER_HIPS'])
+
+
+
+                if display_inactivity:
+                    # cv2.putText(frame, 'Resetting COUNTERS due to inactivity!!!', (10, frame_height - 20), self.font, 0.5, self.COLORS['blue'], 2, lineType=self.linetype)
+                    play_sound = 'reset_counters'
+                    self.state_tracker['start_inactive_time'] = time.perf_counter()
+                    self.state_tracker['INACTIVE_TIME'] = 0.0
+                    # Print accumulated session summary of reps (if any)
+                    if len(self.rep_summaries) > 0:
+                        print("[SESSION] Reps Summary:", flush=True)
+                        for rep_line in self.rep_summaries:
+                            print(rep_line, flush=True)
+
+                
+                cv2.putText(frame, str(int(hip_vertical_angle)), (hip_text_coord_x, hip_coord[1]), self.font, 0.6, self.COLORS['yellow'], 2, lineType=self.linetype)
+                cv2.putText(frame, str(int(knee_vertical_angle)), (knee_text_coord_x, knee_coord[1]+10), self.font, 0.6, self.COLORS['yellow'], 2, lineType=self.linetype)
+                cv2.putText(frame, str(int(ankle_vertical_angle)), (ankle_text_coord_x, ankle_coord[1]), self.font, 0.6, self.COLORS['yellow'], 2, lineType=self.linetype)
+
+                # Heel lifting angle (acute angle between heel->toes vector and horizontal; 0° when flat)
+                heel_lift_angle_raw = find_angle(foot_coord, np.array([heel_coord[0] + 10, heel_coord[1]]), heel_coord)
+                heel_lift_angle = min(heel_lift_angle_raw, 180 - heel_lift_angle_raw)
+                self._log_angle('heel', heel_lift_angle)
+                cv2.putText(frame, str(int(heel_lift_angle)), (heel_text_coord_x, heel_coord[1]), self.font, 0.6, self.COLORS['yellow'], 2, lineType=self.linetype)
+
+                # Display current squat state (s1/s2/s3) as STATE 1/2/3
+                state_display = {'s1': 'STATE 1', 's2': 'STATE 2', 's3': 'STATE 3'}.get(current_state, 'STATE -')
+                draw_text(
+                    frame,
+                    state_display,
+                    pos=(30, 30),
+                    text_color=self.COLORS['yellow'],
+                    font_scale=0.7,
+                    text_color_bg=(0, 0, 0)
+                )
+ 
+                # # Visualize heel angle as an arc from horizontal (broken line) to heel->toes direction
+                # dx = foot_coord[0] - heel_coord[0]
+                # dy = foot_coord[1] - heel_coord[1]
+                # start_base = 0 if dx >= 0 else 180
+                # end_angle = start_base + (-heel_lift_angle if dy > 0 else heel_lift_angle)
+                # cv2.ellipse(frame, heel_coord, (20, 20),
+                #             angle = 0, startAngle = int(start_base), endAngle = int(end_angle),
+                #             color = self.COLORS['white'], thickness = 3, lineType=self.linetype)
+
+                 
+                
+                
+                self.state_tracker['DISPLAY_TEXT'][self.state_tracker['COUNT_FRAMES'] > self.thresholds['CNT_FRAME_THRESH']] = False
+                self.state_tracker['COUNT_FRAMES'][self.state_tracker['COUNT_FRAMES'] > self.thresholds['CNT_FRAME_THRESH']] = 0
+                if self.state_tracker.get('prev_state') == 's2' and current_state == 's1':
+                    self._finalize_rep()
+                if current_state == 's1':
+                    self._reset_angle_maxima()
+                    self.rep_flags['torso_forward'] = False
+                    self.rep_flags['knees_past_toes'] = False
+                    self.rep_flags['curve_spine'] = False
+                    self.upper_arm_min_angle = None
+                    self.event_last['torso_forward'] = None
+                    self.event_last['knees_past_toes'] = None
+                    self.event_peak['torso_forward'] = None
+                    self.event_peak['knees_past_toes'] = None
+                    
+                self.state_tracker['prev_state'] = current_state
+                                  
+
+       
+        
+        else:
+
+            if self.flip_frame:
+                frame = cv2.flip(frame, 1)
+
+            end_time = time.perf_counter()
+            self.state_tracker['INACTIVE_TIME'] += end_time - self.state_tracker['start_inactive_time']
+
+            display_inactivity = False
+
+            if self.state_tracker['INACTIVE_TIME'] >= self.thresholds['INACTIVE_THRESH']:
+                self.state_tracker['SQUAT_COUNT'] = 0
+                self.state_tracker['IMPROPER_SQUAT'] = 0
+                # cv2.putText(frame, 'Resetting SQUAT_COUNT due to inactivity!!!', (10, frame_height - 25), self.font, 0.7, self.COLORS['blue'], 2)
+                display_inactivity = True
+
+            self.state_tracker['start_inactive_time'] = end_time
+
+
+            if display_inactivity:
+                play_sound = 'reset_counters'
+                self.state_tracker['start_inactive_time'] = time.perf_counter()
+                self.state_tracker['INACTIVE_TIME'] = 0.0
+            
+            
+            # Reset all other state variables
+            
+            self.state_tracker['prev_state'] =  None
+            self.state_tracker['curr_state'] = None
+            self.state_tracker['INACTIVE_TIME_FRONT'] = 0.0
+            self.state_tracker['INCORRECT_POSTURE'] = False
+            self.state_tracker['DISPLAY_TEXT'] = np.full((5,), False)
+            self.state_tracker['COUNT_FRAMES'] = np.zeros((5,), dtype=np.int64)
+            self.state_tracker['start_inactive_time_front'] = time.perf_counter()
+            
+            
+            
+        return frame, play_sound
+
+                    
