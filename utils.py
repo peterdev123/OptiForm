@@ -138,7 +138,6 @@ def get_mediapipe_pose(
                         smooth_landmarks = True,
                         min_detection_confidence = 0.5,
                         min_tracking_confidence = 0.5
-
                       ):
     pose = mp.solutions.pose.Pose(
                                     static_image_mode = static_image_mode,
