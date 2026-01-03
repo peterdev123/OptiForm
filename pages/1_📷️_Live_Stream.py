@@ -30,8 +30,26 @@ if mode == 'Beginner':
 elif mode == 'Pro':
     thresholds = get_thresholds_pro()
 
+body_type_display = st.selectbox(
+    'Body Type',
+    ['N/A', 'Longer Legs', 'Longer Torso', 'Balanced'],
+    help='Select your body proportion type. This helps customize squat form analysis based on your body structure. Unsure? Watch this guide: https://www.tiktok.com/@petitelife_incolors/video/7297635071089986862?lang=en'
+)
 
-live_process_frame = ProcessFrame(thresholds=thresholds, flip_frame=True)
+st.markdown(
+    '<small> <a href="https://www.tiktok.com/@petitelife_incolors/video/7297635071089986862?lang=en" target="_blank">Not sure about your body type? Watch this guide</a></small>',
+    unsafe_allow_html=True
+)
+
+body_type_mapping = {
+    'N/A': 'N/A',
+    'Longer Legs': 'LONGER_LEGS',
+    'Longer Torso': 'LONGER_TORSO',
+    'Balanced': 'BALANCED'
+}
+body_type = body_type_mapping.get(body_type_display, 'N/A')
+
+live_process_frame = ProcessFrame(thresholds=thresholds, flip_frame=True, body_type=body_type)
 # Initialize face mesh solution
 pose = get_mediapipe_pose()
 
