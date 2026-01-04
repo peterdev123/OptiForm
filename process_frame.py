@@ -122,6 +122,8 @@ class ProcessFrame:
         }
         self.rep_index = 0
         self.rep_summaries = []
+        self.last_summary = None
+        self.rep_feedbacks = []  # Store LLM feedback for each rep
         self.rep_flags = {
             'torso_forward': False,     
             'knees_past_toes': False,   
@@ -271,6 +273,7 @@ class ProcessFrame:
         body_type_formatted = self._format_body_type(self.body_type)
         
         summary_lines = []
+        summary_lines.append(f"Rep Number: {self.rep_index}")
         summary_lines.append(f"Body Type: {body_type_formatted}")
         
         if has_heels_lifting and self.event_snapshots['heels_lifting'] is not None:
@@ -310,6 +313,7 @@ class ProcessFrame:
         summary = "\n".join(summary_lines)
         print(summary, flush=True)
         self.rep_summaries.append(summary)
+        self.last_summary = summary
 
 
 
