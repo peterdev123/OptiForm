@@ -16,3 +16,21 @@ output_sample.mp4
 
 .DS_Store
 *.log
+
+# Model files (too large for Git - use Git LFS or external storage)
+Fine-Tuning/mistral-7b-squat-qlora/**/*.safetensors
+Fine-Tuning/mistral-7b-squat-qlora/**/*.pt
+Fine-Tuning/mistral-7b-squat-qlora/**/*.pth
+Fine-Tuning/mistral-7b-squat-qlora/**/*.bin
+Fine-Tuning/mistral-7b-squat-qlora/**/*.model
+
+# Output directories
+outputs/
+videos/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

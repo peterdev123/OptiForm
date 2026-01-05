@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  ai-fitness-trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-fitness-trainer
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount model directory (if models are stored externally)
+      - ./Fine-Tuning/mistral-7b-squat-qlora:/app/Fine-Tuning/mistral-7b-squat-qlora:ro
+      # Mount for output videos (optional)
+      - ./outputs:/app/outputs
+      # Mount for input videos (optional - if you want to process local videos)
+      - ./videos:/app/videos:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    # GPU support (uncomment if you have NVIDIA GPU and nvidia-docker installed)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
