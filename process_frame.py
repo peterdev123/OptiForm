@@ -109,10 +109,10 @@ class ProcessFrame:
         
         # ---------------- Per-rep maxima (for summary) -----------------
         self.angle_maxima = {
-            'back': 0,  
-            'knee': 0,  
-            'ankle': 0,  
-            'heel': 0 
+            'back': 0,
+            'knee': 0,
+            'ankle': 0,
+            'heel': 0
         }
         self.min_log_angle = {
             'back': 20,  
@@ -132,7 +132,7 @@ class ProcessFrame:
         }
         self.event_snapshots = {
             'torso_forward': None,       
-            'knees_past_toes': None,    
+            'knees_past_toes': None,
             'heels_lifting': None       
         }
         self.snapshot_thresholds = {
@@ -156,7 +156,7 @@ class ProcessFrame:
         self.prev_elbow_coord = None
         self.prev_upper_side = None 
         self.elbow_smooth_alpha = 0.25
-        self.elbow_visibility_thresh = 0.5  
+        self.elbow_visibility_thresh = 0.5
         
         
         self.FEEDBACK_ID_MAP = {
@@ -182,7 +182,7 @@ class ProcessFrame:
             return 's2'
         else:
             return 's3'
-
+    
     def _update_state_sequence(self, state):
         """Maintain valid state sequence within a rep (s2 then s3)."""
 
@@ -254,7 +254,7 @@ class ProcessFrame:
             'N/A': 'N/A'
         }
         return mapping.get(body_type, 'N/A')
-    
+
     def _finalize_rep(self):
         """Build and store the rep summary in clean, readable format."""
         self.rep_index += 1
