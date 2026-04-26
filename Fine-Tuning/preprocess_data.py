@@ -1,29 +1,26 @@
 """
-Data preprocessing script for Mistral-7B-Instruct fine-tuning.
-Converts CSV to HuggingFace Dataset format with Mistral chat template.
+Data preprocessing script for TinyLlama fine-tuning.
+Converts CSV to HuggingFace Dataset format with a simple instruction/input/output template.
 """
 
 import pandas as pd
 from datasets import Dataset
 from transformers import AutoTokenizer
-import ast
 
-def format_mistral_prompt(instruction, input_text, output_text):
-    """
-    Format data according to Mistral-7B-Instruct chat template.
-    Format: <s>[INST] {instruction}\n\n{input} [/INST] {output}</s>
-    """
-    # Clean instruction (remove quotes if present)
+def format_prompt(instruction, input_text, output_text):
+    instruction = str(instruction).strip()
     if instruction.startswith('"') and instruction.endswith('"'):
         instruction = instruction[1:-1]
     elif instruction.startswith("'") and instruction.endswith("'"):
         instruction = instruction[1:-1]
-    
-    # Format according to Mistral template
-    prompt = f"<s>[INST] {instruction}\n\n{input_text} [/INST] {output_text}</s>"
+    prompt = (
+        f"Instruction: {instruction}\n\n"
+        f"Input:\n{input_text}\n\n"
+        f"Output:\n{output_text}"
+    )
     return prompt
 
-def prepare_dataset(csv_path, tokenizer, max_length=1024):
+def prepare_dataset(csv_path, tokenizer, max_length=512):
     """
     Load CSV and convert to HuggingFace Dataset format.
     
@@ -36,12 +33,10 @@ def prepare_dataset(csv_path, tokenizer, max_length=1024):
     df = pd.read_csv(csv_path)
     
     print(f"Found {len(df)} rows")
-    
-    # Format prompts
     print("Formatting prompts...")
     texts = []
     for idx, row in df.iterrows():
-        prompt = format_mistral_prompt(
+        prompt = format_prompt(
             row['instruction'],
             row['input'],
             row['output']
@@ -51,10 +46,8 @@ def prepare_dataset(csv_path, tokenizer, max_length=1024):
         if (idx + 1) % 100 == 0:
             print(f"Processed {idx + 1}/{len(df)} rows...")
     
-    # Create dataset
     dataset = Dataset.from_dict({"text": texts})
     
-    # Tokenize
     print("Tokenizing dataset...")
     def tokenize_function(examples):
         tokenized = tokenizer(
@@ -79,13 +72,11 @@ def prepare_dataset(csv_path, tokenizer, max_length=1024):
     return tokenized_dataset
 
 if __name__ == "__main__":
-    import sys
     import os
     
     model_name = "mistralai/Mistral-7B-Instruct-v0.2"
-    # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(script_dir, "SquatTrainingDataset.csv")
+    csv_path = os.path.join(script_dir, "SquatTrainingDatasetRefactored.csv")
     
     print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -96,7 +87,7 @@ if __name__ == "__main__":
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
     # Prepare dataset
-    dataset = prepare_dataset(csv_path, tokenizer, max_length=1024)
+    dataset = prepare_dataset(csv_path, tokenizer, max_length=512)
     
     # Save dataset
     output_path = os.path.join(script_dir, "squat_dataset")

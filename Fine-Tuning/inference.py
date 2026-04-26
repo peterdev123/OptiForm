@@ -84,9 +84,9 @@ if __name__ == "__main__":
     
     # Example input
     input_text = """Body Type: Longer Legs
-Heels Lifting: TRUE (35696ms, torso-hip: 35, ankle: 54, heel: 40)
+Heels Lifting: TRUE (torso-hip: 35, ankle: 54, heel: 40)
 Torso Forward: FALSE
-Knees Forward: TRUE (35696ms, torso-hip: 35, ankle: 54, heel: 40)
+Knees Forward: TRUE (torso-hip: 35, ankle: 54, heel: 40)
 Elbow Flaring: TRUE (17)
 Depth: 45
 Acceptable: FALSE"""

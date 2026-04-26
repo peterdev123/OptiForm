@@ -1,4 +1,6 @@
 import time
+import os
+import csv
 import cv2
 import numpy as np
 from utils import find_angle, get_landmark_features, draw_text, draw_dotted_line, draw_dotted_hline, get_landmark_array
@@ -124,6 +126,10 @@ class ProcessFrame:
         self.rep_summaries = []
         self.last_summary = None
         self.rep_feedbacks = []  # Store LLM feedback for each rep
+        self.rep_metrics = []
+        # Where to persist metrics so Streamlit / demo runs both log data
+        self._metrics_csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rep_metrics_stream.csv")
+        self._metrics_csv_initialized = False
         self.rep_flags = {
             'torso_forward': False,     
             'knees_past_toes': False,   
@@ -271,6 +277,44 @@ class ProcessFrame:
         is_acceptable = not (has_heels_lifting or has_torso_forward or has_knees_forward or has_elbow_flaring or not depth_reached_90)
         
         body_type_formatted = self._format_body_type(self.body_type)
+
+        snapshot = None
+        if has_heels_lifting and self.event_snapshots['heels_lifting'] is not None:
+            snapshot = self.event_snapshots['heels_lifting']
+        elif has_torso_forward and self.event_snapshots['torso_forward'] is not None:
+            snapshot = self.event_snapshots['torso_forward']
+        elif has_knees_forward and self.event_snapshots['knees_past_toes'] is not None:
+            snapshot = self.event_snapshots['knees_past_toes']
+
+        if snapshot is not None:
+            back_val = int(snapshot.get('torso_hip_angle', self.angle_maxima.get('back', 0)))
+            ankle_val = int(snapshot.get('ankle_angle', self.angle_maxima.get('ankle', 0)))
+            # Match the printed heel value: heel_distance - 20
+            heel_val = int(snapshot.get('heel_distance', 0)) - 20
+            if heel_val < 0:
+                heel_val = 0
+        else:
+            back_val = int(self.angle_maxima.get("back", 0))
+            ankle_val = int(self.angle_maxima.get("ankle", 0))
+            heel_val = int(self.angle_maxima.get("heel", 0))
+
+        knee_val = int(max_knee_flexion) if max_knee_flexion > 0 else 0
+
+        rep_row = {
+            "back_angle_max": back_val,
+            "knee_angle_max": knee_val,
+            "ankle_angle_max": ankle_val,
+            "heel_angle_max": heel_val,
+            "elbow_angle_min": int(self.elbow_flare_min_angle) if self.elbow_flare_min_angle is not None else 0,
+            "depth_low": 1 if knee_val < 75 else 0,
+            "heels_lifting": 1 if has_heels_lifting else 0,
+            "torso_forward": 1 if has_torso_forward else 0,
+            "knees_past_toes": 1 if has_knees_forward else 0,
+            "elbow_flaring": 1 if has_elbow_flaring else 0,
+            "acceptable": 1 if is_acceptable else 0,
+        }
+        self.rep_metrics.append(rep_row)
+        self._append_metrics_csv(rep_row)
         
         summary_lines = []
         summary_lines.append(f"Rep Number: {self.rep_index}")
@@ -278,23 +322,23 @@ class ProcessFrame:
         
         if has_heels_lifting and self.event_snapshots['heels_lifting'] is not None:
             s = self.event_snapshots['heels_lifting']
-            summary_lines.append(f"Heels Lifting: TRUE ({s['ms']}ms, torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance']) - 20})")
+            summary_lines.append(f"Heels Lifting: TRUE (torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance']) - 20})")
         else:
             summary_lines.append("Heels Lifting: FALSE")
         
         if has_torso_forward and self.event_snapshots['torso_forward'] is not None:
             s = self.event_snapshots['torso_forward']
-            summary_lines.append(f"Torso Forward: TRUE ({s['ms']}ms, torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance'])  - 20})")
+            summary_lines.append(f"Torso Forward: TRUE (torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance'])  - 20})")
         else:
             summary_lines.append("Torso Forward: FALSE")
         
         if has_knees_forward:
             if has_heels_lifting and self.event_snapshots['heels_lifting'] is not None and self.event_snapshots['heels_lifting']['ankle_angle'] > 40:
                 s = self.event_snapshots['heels_lifting']
-                summary_lines.append(f"Knees Forward: TRUE ({s['ms']}ms, torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance'])  - 20})")
+                summary_lines.append(f"Knees Forward: TRUE (torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance'])  - 20})")
             elif self.event_snapshots['knees_past_toes'] is not None:
                 s = self.event_snapshots['knees_past_toes']
-                summary_lines.append(f"Knees Forward: TRUE ({s['ms']}ms, torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance']) - 20})")
+                summary_lines.append(f"Knees Forward: TRUE (torso-hip: {int(s['torso_hip_angle'])}, ankle: {int(s['ankle_angle'])}, heel: {int(s['heel_distance']) - 20})")
             else:
                 summary_lines.append("Knees Forward: TRUE")
         else:
@@ -314,6 +358,37 @@ class ProcessFrame:
         print(summary, flush=True)
         self.rep_summaries.append(summary)
         self.last_summary = summary
+
+    def _append_metrics_csv(self, rep_row):
+        """Append a rep's metrics to a CSV file for offline analysis.
+
+        This is called every time a rep is finalized so it works both in
+        plain Python runs and when invoked via `streamlit run`.
+        """
+        try:
+            fieldnames = [
+                "back_angle_max",
+                "knee_angle_max",
+                "ankle_angle_max",
+                "heel_angle_max",
+                "elbow_angle_min",
+                "depth_low",
+                "heels_lifting",
+                "torso_forward",
+                "knees_past_toes",
+                "elbow_flaring",
+                "acceptable",
+            ]
+            file_exists = os.path.isfile(self._metrics_csv_path)
+            mode = "a" if file_exists else "w"
+            with open(self._metrics_csv_path, mode, newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow({k: rep_row.get(k) for k in fieldnames})
+        except Exception:
+            # Logging must never break the main pose pipeline.
+            pass
 
 
 

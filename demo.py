@@ -6,6 +6,7 @@ Can be run standalone without Streamlit
 
 import cv2
 import sys
+import os
 from utils import get_mediapipe_pose
 from process_frame import ProcessFrame
 from thresholds import get_thresholds_beginner, get_thresholds_pro
@@ -151,6 +152,43 @@ def main():
             for i, summary in enumerate(process_frame.rep_summaries, 1):
                 print(f"\n[REP {i}]")
                 print(summary)
+
+        # Save per-rep metrics to CSV (heatmap optional)
+        try:
+            if hasattr(process_frame, "rep_metrics") and len(process_frame.rep_metrics) > 0:
+                import pandas as pd
+
+                df = pd.DataFrame(process_frame.rep_metrics)
+                out_dir = os.path.dirname(os.path.abspath(__file__))
+                metrics_csv_path = os.path.join(out_dir, "rep_metrics.csv")
+                df.to_csv(metrics_csv_path, index=False)
+                print(f"\nPer-rep metrics saved to: {metrics_csv_path}")
+
+                # Optional: correlation heatmap (only if plotting deps exist)
+                try:
+                    import matplotlib.pyplot as plt
+                    import seaborn as sns
+
+                    corr = df.drop(columns=["rep_index"], errors="ignore").corr()
+                    plt.figure(figsize=(8, 6))
+                    sns.heatmap(
+                        corr,
+                        annot=True,
+                        cmap="coolwarm",
+                        vmin=-1,
+                        vmax=1,
+                        square=True,
+                        fmt=".2f"
+                    )
+                    plt.title("Squat Rep Metrics Correlation Heatmap")
+                    plt.tight_layout()
+                    plt.show()
+                except Exception as e:
+                    print(f"\nHeatmap skipped (plotting deps missing or error): {e}")
+            else:
+                print("\nNo per-rep metrics collected — skipping metrics CSV and heatmap.")
+        except Exception as e:
+            print(f"\nCould not generate metrics CSV: {e}")
         
         cap.release()
         if video_writer is not None:

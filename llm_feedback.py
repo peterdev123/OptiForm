@@ -8,76 +8,129 @@ import sys
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
+from peft import __version__ as peft_version
 
 # Add Fine-Tuning directory to path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 FINE_TUNING_DIR = os.path.join(SCRIPT_DIR, "Fine-Tuning")
 sys.path.append(FINE_TUNING_DIR)
 
+# Mistral 7B base model and QLoRA adapter (new fine-tuned squat coach)
 BASE_MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
-LORA_WEIGHTS = os.path.join(FINE_TUNING_DIR, "mistral-7b-squat-qlora", "checkpoint-450")
+MISTRAL_ADAPTER_DIR = os.path.join(
+    SCRIPT_DIR,
+    "Fine-Tuning",
+    "mistral-7b-squat-lora-main",
+    "mistral-7b-squat-lora",
+)
+LORA_WEIGHTS = MISTRAL_ADAPTER_DIR
 
 # Global model instance (singleton pattern)
 _model = None
 _tokenizer = None
 
 def load_llm_model():
-    """Load the fine-tuned LLM model (singleton pattern)"""
     global _model, _tokenizer
     
     if _model is not None and _tokenizer is not None:
         return _model, _tokenizer
     
     try:
-        print("Loading fine-tuned model...")
+        # Adapter was produced with newer PEFT; older PEFT can't parse fields like
+        # `alora_invocation_tokens` and will crash with a TypeError.
+        try:
+            from packaging.version import Version
+            if Version(peft_version) < Version("0.18.1"):
+                raise RuntimeError(
+                    f"peft>={ '0.18.1' } is required for this adapter, but found peft=={peft_version}. "
+                    f"Upgrade: pip install -U peft"
+                )
+        except Exception:
+            # If packaging isn't available, we just proceed and let PEFT raise.
+            pass
+
+        print("Loading Mistral 7B squat-coach QLoRA model...")
+        # Load tokenizer from the base model repo.
+        # The adapter folder may include a tokenizer.json that is not compatible with the
+        # local `tokenizers` build (can error with "ModelWrapper").
         tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, trust_remote_code=True)
-        
+
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.pad_token_id = tokenizer.eos_token_id
-        
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        )
-        
+
+        if torch.cuda.is_available():
+            device = "cuda"
+            dtype = torch.float16
+        else:
+            device = "cpu"
+            dtype = torch.float32
+
+        # Use 4-bit on GPU for lower VRAM. If VRAM is still insufficient, allow disk offload.
+        offload_dir = os.path.join(SCRIPT_DIR, ".hf_offload")
+        os.makedirs(offload_dir, exist_ok=True)
+
+        quant_config = None
+        if device == "cuda":
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+            )
+
         model = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL,
-            quantization_config=bnb_config,
-            device_map="auto",
+            quantization_config=quant_config,
+            torch_dtype=dtype,
+            device_map="auto" if device == "cuda" else None,
+            offload_folder=offload_dir if device == "cuda" else None,
+            low_cpu_mem_usage=True,
             trust_remote_code=True,
-            torch_dtype=torch.float16,
         )
-        
         model = PeftModel.from_pretrained(model, LORA_WEIGHTS)
+        if device == "cpu":
+            model.to(device)
         model.eval()
-        
-        # Compile model for faster inference (PyTorch 2.0+)
-        try:
-            model = torch.compile(model, mode="reduce-overhead")
-            print("Model compiled for faster inference")
-        except:
-            print("Model compilation not available (requires PyTorch 2.0+)")
-        
+
         _model = model
         _tokenizer = tokenizer
-        
-        print("Model loaded successfully!")
+
+        print(f"Model loaded successfully on {device.upper()}")
         return model, tokenizer
     except Exception as e:
         print(f"Error loading model: {e}")
         return None, None
 
 def format_prompt(instruction, input_text):
-    """Format prompt according to Mistral template"""
+    """
+    Format prompt using the Alpaca-style template used for Qwen fine-tuning:
+
+    ### Instruction:
+    {instruction}
+
+    ### Input:
+    {input}
+
+    ### Response:
+    """
+    instruction = instruction.strip()
     if instruction.startswith('"') and instruction.endswith('"'):
         instruction = instruction[1:-1]
     elif instruction.startswith("'") and instruction.endswith("'"):
         instruction = instruction[1:-1]
-    
-    prompt = f"<s>[INST] {instruction}\n\n{input_text} [/INST]"
+
+    input_text = input_text.strip()
+
+    prompt = f"""### Instruction:
+{instruction}
+
+### Input:
+{input_text}
+
+### Response:
+"""
     return prompt
 
 def generate_feedback(form_summary_text, model=None, tokenizer=None):
@@ -98,7 +151,20 @@ def generate_feedback(form_summary_text, model=None, tokenizer=None):
     if model is None or tokenizer is None:
         return None
     
-    instruction = "You are an expert fitness trainer and biomechanics specialist on back squat. Analyze back squat form data. Provide corrective feedback considering form issues, body type, and measurements. Give actionable recommendations."
+    instruction = (
+        "You are an expert back squat coach. Using only the squat data "
+        "(body type, heels, torso, knees, elbows, depth, acceptable), "
+        "reply in exactly this format and nothing else:\n\n"
+        "Overall: <short sentence about whether the squat is acceptable or needs work>\n\n"
+        "Issues:\n"
+        "- <issue 1>\n"
+        "- <issue 2>\n"
+        "(use 'Issues:\\n- None' if there are no issues)\n\n"
+        "Tips:\n"
+        "- <tip 1>\n"
+        "- <tip 2>\n"
+        "(use 'Tips:\\n- None' if there are no tips)."
+    )
     
     prompt = format_prompt(instruction, form_summary_text)
     
@@ -109,14 +175,14 @@ def generate_feedback(form_summary_text, model=None, tokenizer=None):
             # Faster generation settings for speed
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=256,  # Increased to allow complete responses
-                temperature=0.3,  # Lower = faster, more deterministic
-                top_p=0.8,  # Lower = faster
-                do_sample=False,  # Greedy decoding = faster
+                max_new_tokens=128,
+                temperature=0.3,
+                top_p=0.8,
+                do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id,  # Explicitly set EOS token
-                use_cache=True,  # Enable KV cache
-                num_beams=1,  # No beam search = faster
+                eos_token_id=tokenizer.eos_token_id,
+                use_cache=True,
+                num_beams=1,
             )
         
         # Decode only the new tokens (response part)

@@ -34,3 +34,87 @@ videos/
 *.swp
 *.swo
 *~
+
+# ----------------------------
+# Secrets and credentials
+# ----------------------------
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+credentials*.json
+service-account*.json
+google-services.json
+GoogleService-Info.plist
+
+# ----------------------------
+# Documentation (non-essential for runtime push)
+# ----------------------------
+docs/
+**/*.md
+!README.md
+!**/README.md
+
+# ----------------------------
+# Python virtual envs and caches
+# ----------------------------
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ----------------------------
+# ML artifacts, checkpoints, and experiment outputs
+# ----------------------------
+Fine-Tuning/**/checkpoint-*/
+Fine-Tuning/**/*.safetensors
+Fine-Tuning/**/*.pt
+Fine-Tuning/**/*.pth
+Fine-Tuning/**/*.bin
+Fine-Tuning/**/*.model
+Fine-Tuning/**/*.gguf
+Fine-Tuning/**/tokenizer.json
+Fine-Tuning/**/tokenizer.model
+Fine-Tuning/**/tokenizer_config.json
+Fine-Tuning/**/special_tokens_map.json
+Fine-Tuning/**/optimizer.pt*
+Fine-Tuning/**/scheduler.pt*
+Fine-Tuning/**/rng_state.pth
+Fine-Tuning/**/scaler.pt
+Fine-Tuning/**/trainer_state.json
+Fine-Tuning/**/training_args.bin
+Fine-Tuning/**/adapter_model.safetensors
+Fine-Tuning/**/adapter_config.json
+Fine-Tuning/**/*-main/
+
+# ----------------------------
+# Large data artifacts
+# ----------------------------
+Fine-Tuning/*backup*.csv
+rep_metrics_stream.csv
+*.sqlite
+*.db
+*.ipynb
+*.csv
+
+# ----------------------------
+# Flutter / Android / iOS generated files
+# ----------------------------
+mobile-integration-flutter/app/.dart_tool/
+mobile-integration-flutter/app/build/
+mobile-integration-flutter/app/.flutter-plugins
+mobile-integration-flutter/app/.flutter-plugins-dependencies
+mobile-integration-flutter/app/.packages
+mobile-integration-flutter/app/ios/Pods/
+mobile-integration-flutter/app/ios/.symlinks/
+mobile-integration-flutter/app/ios/Flutter/Flutter.framework
+mobile-integration-flutter/app/ios/Flutter/Flutter.podspec
+mobile-integration-flutter/app/android/.gradle/
+mobile-integration-flutter/app/android/local.properties
+
+# Misc
+terminals/

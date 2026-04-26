@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Squat Prompt Input (Parity v1)",
+  "description": "Structured mobile payload aligned to current snapshot summary fields used by the desktop pipeline and LLM prompt.",
+  "type": "object",
+  "required": [
+    "rep_number",
+    "body_type",
+    "heels_lifting",
+    "torso_forward",
+    "knees_forward",
+    "elbow_flaring",
+    "depth",
+    "acceptable",
+    "summary_text"
+  ],
+  "properties": {
+    "rep_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "body_type": {
+      "type": "string",
+      "enum": [
+        "Longer Legs",
+        "Longer Torso",
+        "Balanced",
+        "N/A"
+      ]
+    },
+    "heels_lifting": {
+      "type": "object",
+      "required": [
+        "flag"
+      ],
+      "properties": {
+        "flag": {
+          "type": "boolean"
+        },
+        "torso_hip": {
+          "type": "integer"
+        },
+        "ankle": {
+          "type": "integer"
+        },
+        "heel": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "torso_forward": {
+      "type": "object",
+      "required": [
+        "flag"
+      ],
+      "properties": {
+        "flag": {
+          "type": "boolean"
+        },
+        "torso_hip": {
+          "type": "integer"
+        },
+        "ankle": {
+          "type": "integer"
+        },
+        "heel": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "knees_forward": {
+      "type": "object",
+      "required": [
+        "flag"
+      ],
+      "properties": {
+        "flag": {
+          "type": "boolean"
+        },
+        "torso_hip": {
+          "type": "integer"
+        },
+        "ankle": {
+          "type": "integer"
+        },
+        "heel": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "elbow_flaring": {
+      "type": "object",
+      "required": [
+        "flag"
+      ],
+      "properties": {
+        "flag": {
+          "type": "boolean"
+        },
+        "min_angle": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "depth": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "acceptable": {
+      "type": "boolean"
+    },
+    "summary_text": {
+      "type": "string",
+      "description": "Canonical newline-formatted summary that will be passed to the LLM prompt."
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,8 +1,3 @@
-"""
-QLoRA Fine-tuning script for Mistral-7B-Instruct-v0.2
-Optimized for 6GB VRAM GPU
-"""
-
 import torch
 from transformers import (
     AutoModelForCausalLM,
@@ -10,7 +5,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling
+    DataCollatorForLanguageModeling,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
 from datasets import load_from_disk
@@ -22,7 +17,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
 DATASET_PATH = os.path.join(SCRIPT_DIR, "squat_dataset")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "mistral-7b-squat-qlora")
-MAX_SEQ_LENGTH = 1024  
+MAX_SEQ_LENGTH = 512  
 
 
 LORA_R = 16  
@@ -60,11 +55,10 @@ print(f"\n[2/6]")
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.float16, 
-    bnb_4bit_use_double_quant=True, 
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,
 )
 
-# Load model with 4-bit quantization
 print(f"[3/6]")
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
@@ -131,21 +125,25 @@ training_args = TrainingArguments(
     logging_steps=LOGGING_STEPS,
     save_steps=SAVE_STEPS,
     eval_steps=EVAL_STEPS,
-    eval_strategy="steps" if eval_dataset else "no",
+    evaluation_strategy="steps" if eval_dataset else "no",
     save_total_limit=3, 
     load_best_model_at_end=True if eval_dataset else False,
     metric_for_best_model="loss" if eval_dataset else None,
     greater_is_better=False,
-    fp16=True, 
-    optim="paged_adamw_8bit", 
-    report_to="tensorboard",
-    logging_dir=f"{OUTPUT_DIR}/logs",
+    fp16=True,
+    optim="paged_adamw_8bit",
+    report_to=[],
     max_steps=-1, 
     dataloader_pin_memory=False,  
     remove_unused_columns=False,
 )
 
-trainer = Trainer(
+class QLoRATrainer(Trainer):
+    def _move_model_to_device(self, model, device):
+        return model
+
+
+trainer = QLoRATrainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,
@@ -191,6 +189,8 @@ else:
     print("\n" + "=" * 50)
     print("Starting NEW training")
     print("=" * 50)
+
+checkpoint_dir = None
 
 print(f"Effective batch size: {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
 print(f"Total steps: {len(train_dataset) // (BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS) * NUM_EPOCHS}")
