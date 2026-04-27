@@ -11,6 +11,7 @@ import 'data/repositories/http_feedback_repository.dart';
 import 'domain/models/chat_result.dart';
 import 'domain/models/feedback_result.dart';
 import 'domain/models/squat_prompt_input.dart';
+import 'features/landing/opti_landing_page.dart';
 import 'features/pose_processing/live_pose_stream_service.dart';
 import 'features/pose_processing/video_pose_analyzer.dart';
 import 'features/rule_engine/thresholds.dart';
@@ -35,21 +36,67 @@ void main() {
   );
 }
 
-class SquatTrainerApp extends StatelessWidget {
+class SquatTrainerApp extends StatefulWidget {
   const SquatTrainerApp({super.key});
+
+  @override
+  State<SquatTrainerApp> createState() => _SquatTrainerAppState();
+}
+
+class _SquatTrainerAppState extends State<SquatTrainerApp> {
+  static const String _themeModeStorageKey = 'optiform_theme_mode_v1';
+  ThemeMode _themeMode = ThemeMode.dark;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadThemeMode();
+  }
+
+  Future<void> _loadThemeMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedMode = prefs.getString(_themeModeStorageKey);
+    if (!mounted) return;
+    setState(() {
+      _themeMode = savedMode == 'light' ? ThemeMode.light : ThemeMode.dark;
+    });
+  }
+
+  Future<void> _toggleThemeMode() async {
+    final nextMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+    setState(() {
+      _themeMode = nextMode;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_themeModeStorageKey, nextMode == ThemeMode.dark ? 'dark' : 'light');
+  }
+
+  bool get _isDarkMode => _themeMode == ThemeMode.dark;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'OptiForm',
-      theme: AppTheme.dark(),
-      home: const AppShell(),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: _themeMode,
+      home: AppShell(
+        isDarkMode: _isDarkMode,
+        onToggleTheme: _toggleThemeMode,
+      ),
     );
   }
 }
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  const AppShell({
+    required this.isDarkMode,
+    required this.onToggleTheme,
+    super.key,
+  });
+
+  final bool isDarkMode;
+  final VoidCallback onToggleTheme;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -57,18 +104,21 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   static const String _historyStorageKey = 'optiform_session_history_v1';
+  static const String _landingSeenKey = 'optiform_landing_seen_v1';
   int _currentIndex = 0;
   List<SessionHistoryEntry> _historyEntries = const [];
+  bool _showLanding = false;
 
   @override
   void initState() {
     super.initState();
-    _loadHistory();
+    _loadPersistedState();
   }
 
-  Future<void> _loadHistory() async {
+  Future<void> _loadPersistedState() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList(_historyStorageKey) ?? const [];
+    final landingSeen = prefs.getBool(_landingSeenKey) ?? false;
     final parsed = <SessionHistoryEntry>[];
     for (final item in raw) {
       try {
@@ -79,6 +129,7 @@ class _AppShellState extends State<AppShell> {
     if (!mounted) return;
     setState(() {
       _historyEntries = parsed;
+      _showLanding = !landingSeen;
     });
   }
 
@@ -95,8 +146,22 @@ class _AppShellState extends State<AppShell> {
     await _saveHistory();
   }
 
+  Future<void> _onLandingCompleted() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_landingSeenKey, true);
+    if (!mounted) return;
+    setState(() {
+      _showLanding = false;
+      _currentIndex = 0;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_showLanding) {
+      return OptiLandingPage(onStartNow: _onLandingCompleted);
+    }
+
     final pages = <Widget>[
       IntroHomePage(
         onStartAnalysis: () {
@@ -113,6 +178,11 @@ class _AppShellState extends State<AppShell> {
       body: IndexedStack(
         index: _currentIndex,
         children: pages,
+      ),
+      floatingActionButton: FloatingActionButton.small(
+        onPressed: widget.onToggleTheme,
+        tooltip: widget.isDarkMode ? 'Switch to light theme' : 'Switch to dark theme',
+        child: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode),
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
@@ -150,14 +220,19 @@ class IntroHomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('OptiForm')),
+      appBar: AppBar(
+        title: const Text('Home'),
+      ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             OptiCard(
+              padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -167,70 +242,89 @@ class IntroHomePage extends StatelessWidget {
                         width: 42,
                         height: 42,
                         decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(10),
+                          color: colors.primary.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(12),
                         ),
                         child: Icon(
                           Icons.fitness_center,
-                          color: Theme.of(context).colorScheme.primary,
+                          color: colors.primary,
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      Text('Welcome to OptiForm', style: Theme.of(context).textTheme.titleLarge),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Welcome back', style: theme.textTheme.bodySmall),
+                            Text('OptiForm Coach', style: theme.textTheme.titleLarge),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
                   Text(
-                    'Your AI-powered squat form coach. Analyze every rep, catch common faults, and get practical feedback based on your movement data.',
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    'Track squat quality with clean rep analysis, practical feedback, and progress you can review anytime.',
+                    style: theme.textTheme.bodyMedium,
                   ),
                 ],
               ),
             ),
             OptiCard(
+              padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('How it works', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 8),
+                  Text('How it works', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 12),
                   _IntroStep(
                     number: '1',
-                    title: 'Select Body Type',
-                    description: 'Pick your body type before analysis to apply the proper thresholds.',
+                    title: 'Choose body type',
+                    description: 'Select your body profile so analysis uses the right movement thresholds.',
                   ),
                   _IntroStep(
                     number: '2',
-                    title: 'Upload or Go Live',
-                    description: 'Use a side-view squat video or start live camera tracking.',
+                    title: 'Upload or go live',
+                    description: 'Analyze a side-view squat video or stream from your camera in real time.',
                   ),
                   _IntroStep(
                     number: '3',
-                    title: 'Rep-Level Analysis',
-                    description: 'OptiForm extracts pose landmarks, counts reps, and detects form issues.',
+                    title: 'Get rep insights',
+                    description: 'OptiForm detects landmarks, counts reps, and flags form issues per rep.',
                   ),
                   _IntroStep(
                     number: '4',
-                    title: 'Review and Improve',
-                    description: 'See visual checks, per-rep feedback, and ask the coach chat for tips.',
+                    title: 'Refine technique',
+                    description: 'Review feedback, visual checks, and coaching chat suggestions.',
                   ),
                 ],
               ),
             ),
             OptiCard(
+              padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Best recording setup', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 8),
-                  Text('- Side view with full body visible', style: Theme.of(context).textTheme.bodySmall),
-                  Text('- Stable camera and clear lighting', style: Theme.of(context).textTheme.bodySmall),
-                  Text('- Perform continuous reps with pauses only at top', style: Theme.of(context).textTheme.bodySmall),
+                  Text('Recording checklist', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  _ChecklistItem(
+                    icon: Icons.videocam_outlined,
+                    text: 'Side view with full body in frame',
+                  ),
+                  _ChecklistItem(
+                    icon: Icons.wb_sunny_outlined,
+                    text: 'Stable camera and clear lighting',
+                  ),
+                  _ChecklistItem(
+                    icon: Icons.repeat_outlined,
+                    text: 'Continuous reps with brief pauses at the top',
+                  ),
                 ],
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             OptiButton(
-              label: 'Start Analysis',
+              label: 'Open Analyze',
               onPressed: () {
                 if (onStartAnalysis != null) {
                   onStartAnalysis!.call();
@@ -261,36 +355,37 @@ class _IntroStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 22,
-            height: 22,
+            width: 24,
+            height: 24,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primary,
-              borderRadius: BorderRadius.circular(11),
+              color: theme.colorScheme.primary.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
               number,
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: theme.colorScheme.primary,
                 fontSize: 12,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: Theme.of(context).textTheme.labelLarge),
-                const SizedBox(height: 2),
-                Text(description, style: Theme.of(context).textTheme.bodySmall),
+                Text(title, style: theme.textTheme.labelLarge),
+                const SizedBox(height: 3),
+                Text(description, style: theme.textTheme.bodySmall),
               ],
             ),
           ),
@@ -316,20 +411,28 @@ class HistoryPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('History')),
+      appBar: AppBar(title: const Text('Progress History')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         child: entries.isEmpty
             ? OptiCard(
+                padding: const EdgeInsets.all(18),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Session History', style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(Icons.insights_outlined, color: theme.colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Text('No sessions yet', style: theme.textTheme.titleMedium),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
                     Text(
-                      'No sessions yet. Analyze a workout in the Analyze tab to start building your history.',
-                      style: Theme.of(context).textTheme.bodySmall,
+                      'Run your first analysis from the Analyze tab to start tracking trends and rep quality over time.',
+                      style: theme.textTheme.bodySmall,
                     ),
                   ],
                 ),
@@ -337,8 +440,8 @@ class HistoryPage extends StatelessWidget {
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Session History', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 8),
+                  Text('Recent sessions', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 10),
                   ...entries.map((entry) {
                     final when = DateTime.tryParse(entry.createdAtIso);
                     final dateText = when == null
@@ -346,11 +449,21 @@ class HistoryPage extends StatelessWidget {
                         : '${when.year}-${when.month.toString().padLeft(2, '0')}-${when.day.toString().padLeft(2, '0')} '
                             '${when.hour.toString().padLeft(2, '0')}:${when.minute.toString().padLeft(2, '0')}';
                     return OptiCard(
+                      padding: const EdgeInsets.all(14),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(dateText, style: Theme.of(context).textTheme.labelLarge),
-                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Icon(Icons.calendar_today_outlined,
+                                  size: 16, color: theme.colorScheme.primary),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(dateText, style: theme.textTheme.labelLarge),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
                           Wrap(
                             spacing: 8,
                             runSpacing: 8,
@@ -364,8 +477,8 @@ class HistoryPage extends StatelessWidget {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
-                          Text('Top issue: ${entry.topIssue}'),
+                          const SizedBox(height: 10),
+                          Text('Top correction: ${entry.topIssue}', style: theme.textTheme.bodyMedium),
                         ],
                       ),
                     );
@@ -775,26 +888,70 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   }
 
   Widget _buildHeaderSection(BuildContext context) {
+    final theme = Theme.of(context);
     return OptiCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('OptiForm Analysis', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 4),
+          Text('Analyze Session', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 6),
           Text(
-            'Upload or stream a squat set, detect rep-level issues, then get coaching feedback.',
-            style: Theme.of(context).textTheme.bodySmall,
+            'Upload a squat set or stream live to get rep-level form feedback.',
+            style: theme.textTheme.bodySmall,
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Mode: ${_analysisSource == _AnalysisSource.uploadVideo ? 'Upload Video' : 'Live Camera'}',
-            style: Theme.of(context).textTheme.bodySmall,
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _InfoPill(
+                icon: Icons.route_outlined,
+                text: _analysisSource == _AnalysisSource.uploadVideo ? 'Mode: Upload' : 'Mode: Live',
+              ),
+              _InfoPill(
+                icon: _hasSelectedBodyType ? Icons.check_circle_outline : Icons.error_outline,
+                text: _hasSelectedBodyType ? 'Body type set' : 'Body type required',
+                accent: _hasSelectedBodyType ? Colors.green : Colors.orange,
+              ),
+            ],
           ),
-          Text(
-            _hasSelectedBodyType ? 'Body Type: Selected' : 'Body Type: Required',
-            style: TextStyle(
-              color: _hasSelectedBodyType ? Colors.green : Colors.orange,
-              fontSize: 13,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+    IconData? icon,
+  }) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (icon != null) ...[
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, size: 16, color: theme.colorScheme.primary),
+            ),
+            const SizedBox(width: 10),
+          ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: theme.textTheme.titleMedium),
+                const SizedBox(height: 2),
+                Text(subtitle, style: theme.textTheme.bodySmall),
+              ],
             ),
           ),
         ],
@@ -807,6 +964,12 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _buildSectionHeader(
+            context,
+            title: 'Configuration',
+            subtitle: 'Set backend, analysis mode, and body profile',
+            icon: Icons.tune,
+          ),
           TextField(
             controller: _baseUrlController,
             decoration: const InputDecoration(
@@ -883,6 +1046,12 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _buildSectionHeader(
+            context,
+            title: 'Input Source',
+            subtitle: 'Capture data from video upload or live camera',
+            icon: Icons.video_camera_back_outlined,
+          ),
           if (_analysisSource == _AnalysisSource.uploadVideo) ...[
             SizedBox(
               child: OptiButton(
@@ -955,8 +1124,14 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _buildSectionHeader(
+            context,
+            title: 'Pipeline',
+            subtitle: 'Pose extraction -> rep detection -> AI feedback',
+            icon: Icons.account_tree_outlined,
+          ),
           Text(
-            'Flow: Upload/Live -> on-device pose metrics (mode/body-type thresholds) -> AI feedback per rep.',
+            'Flow: Upload/Live -> on-device metrics (body-type thresholds) -> feedback per rep.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           if (_lastBuiltInput != null) ...[
@@ -972,7 +1147,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
               onPressed: _analysisSource == _AnalysisSource.liveCamera
                   ? (_isLoading ? null : _generateFromLatestLiveRep)
                   : null,
-              label: _isLoading ? 'Generating...' : 'Generate From Latest Live Rep',
+              label: _isLoading ? 'Generating...' : 'Generate from Latest Live Rep',
             ),
           ),
         ],
@@ -981,18 +1156,20 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   }
 
   Widget _buildLatestFeedbackSection(BuildContext context) {
+    final theme = Theme.of(context);
     return OptiCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Latest Feedback',
-            style: Theme.of(context).textTheme.titleMedium,
+          _buildSectionHeader(
+            context,
+            title: 'Latest Feedback',
+            subtitle: 'Most recent model output for your current rep',
+            icon: Icons.auto_awesome_outlined,
           ),
-          const SizedBox(height: 8),
           Text(
             'Model: ${_result!.modelName}',
-            style: Theme.of(context).textTheme.bodySmall,
+            style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -1024,7 +1201,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     return [
       const SizedBox(height: 4),
       Text(
-        'Per-rep feedbacks',
+        'Per-rep feedback',
         style: Theme.of(context).textTheme.titleMedium,
       ),
       const SizedBox(height: 8),
@@ -1060,16 +1237,12 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Coach Chat',
-            style: Theme.of(context).textTheme.titleMedium,
+          _buildSectionHeader(
+            context,
+            title: 'Coach Chat',
+            subtitle: 'Ask about movement patterns and practical corrections',
+            icon: Icons.chat_bubble_outline,
           ),
-          const SizedBox(height: 4),
-          Text(
-            'Ask about history, tips, and form patterns using your recent rep context.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 8),
           TextField(
             controller: _chatController,
             minLines: 1,
@@ -1134,16 +1307,12 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Pose Landmark Visual Check',
-            style: Theme.of(context).textTheme.titleMedium,
+          _buildSectionHeader(
+            context,
+            title: 'Pose Landmark Check',
+            subtitle: 'Frame snapshots with landmark overlays for quick validation',
+            icon: Icons.visibility_outlined,
           ),
-          const SizedBox(height: 4),
-          Text(
-            'One captured frame per finalized rep with detected landmarks overlaid.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 8),
           ..._debugSnapshots.map(
             (snapshot) => Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -1158,13 +1327,78 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('OptiForm')),
+      appBar: AppBar(title: const Text('Analyze')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: _buildAnalyzeSections(context),
         ),
+      ),
+    );
+  }
+}
+
+class _ChecklistItem extends StatelessWidget {
+  const _ChecklistItem({
+    required this.icon,
+    required this.text,
+  });
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: theme.colorScheme.primary),
+          const SizedBox(width: 8),
+          Expanded(child: Text(text, style: theme.textTheme.bodySmall)),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoPill extends StatelessWidget {
+  const _InfoPill({
+    required this.icon,
+    required this.text,
+    this.accent,
+  });
+
+  final IconData icon;
+  final String text;
+  final Color? accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = accent ?? theme.colorScheme.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }
