@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/repositories/http_feedback_repository.dart';
@@ -12,7 +13,6 @@ import 'domain/models/chat_result.dart';
 import 'domain/models/feedback_result.dart';
 import 'domain/models/squat_prompt_input.dart';
 import 'features/landing/opti_landing_page.dart';
-import 'features/pose_processing/live_pose_stream_service.dart';
 import 'features/pose_processing/video_pose_analyzer.dart';
 import 'features/rule_engine/thresholds.dart';
 import 'features/video_input/media_input_service.dart';
@@ -22,6 +22,52 @@ import 'widgets/opti_button.dart';
 import 'widgets/opti_card.dart';
 import 'widgets/status_chip.dart';
 
+String _stringifyError(Object error) {
+  if (error is String) return error;
+  return error.toString();
+}
+
+bool _isLikelyInlineAppMessage(String raw) {
+  final lower = raw.toLowerCase();
+  if (raw.length > 280) return false;
+  if (lower.contains('socketexception')) return false;
+  if (lower.contains('failed host lookup')) return false;
+  if (lower.contains('clientexception')) return false;
+  if (lower.contains('timeouterror')) return false;
+  if (lower.contains('timeoutexception')) return false;
+  if (raw.contains('API failed')) return false;
+  if (lower.contains('formatexception')) return false;
+  return true;
+}
+
+String _friendlyTechnicalSummary(String raw) {
+  final lower = raw.toLowerCase();
+  if (lower.contains('timeouterror') || lower.contains('timeoutexception')) {
+    return 'The request timed out. Check your connection and backend URL, then try again.';
+  }
+  if (lower.contains('socketexception') ||
+      lower.contains('failed host lookup') ||
+      lower.contains('network is unreachable') ||
+      lower.contains('connection refused') ||
+      lower.contains('connection reset') ||
+      lower.contains('connection timed out')) {
+    return 'Could not reach the server. Confirm the backend URL and that your device and server are on the same network.';
+  }
+  if (raw.contains('Feedback API failed') || raw.contains('Chat API failed')) {
+    return 'The coaching server returned an error. Check that the API is running and the URL is correct.';
+  }
+  if (lower.contains('formatexception')) {
+    return 'Received an unexpected response from the server.';
+  }
+  return 'Something went wrong. Expand technical details below if you need them for debugging.';
+}
+
+String _errorSummaryForDisplay(Object error) {
+  final raw = _stringifyError(error);
+  if (_isLikelyInlineAppMessage(raw)) return raw;
+  return _friendlyTechnicalSummary(raw);
+}
+
 void main() {
   // Silence Dart-side terminal logs from app/framework/plugins.
   debugPrint = (String? _, {int? wrapWidth}) {};
@@ -29,9 +75,9 @@ void main() {
     () {
       runApp(const SquatTrainerApp());
     },
-    (_, __) {},
+    (error, stackTrace) {},
     zoneSpecification: ZoneSpecification(
-      print: (_, __, ___, ____) {},
+      print: (self, parent, zone, line) {},
     ),
   );
 }
@@ -284,8 +330,8 @@ class IntroHomePage extends StatelessWidget {
                   ),
                   _IntroStep(
                     number: '2',
-                    title: 'Upload or go live',
-                    description: 'Analyze a side-view squat video or stream from your camera in real time.',
+                    title: 'Upload your set',
+                    description: 'Analyze a side-view squat video from camera capture or your files/gallery.',
                   ),
                   _IntroStep(
                     number: '3',
@@ -318,6 +364,11 @@ class IntroHomePage extends StatelessWidget {
                   _ChecklistItem(
                     icon: Icons.repeat_outlined,
                     text: 'Continuous reps with brief pauses at the top',
+                  ),
+                  _ChecklistItem(
+                    icon: Icons.cloud_outlined,
+                    text:
+                        'For AI coaching, keep your backend reachable (same Wi‑Fi or correct URL).',
                   ),
                 ],
               ),
@@ -552,34 +603,54 @@ class SessionHistoryEntry {
   }
 }
 
-enum _AnalysisSource { uploadVideo, liveCamera }
+enum _VideoInputSource { camera, gallery }
 
 class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
+  final GlobalKey _errorBannerKey = GlobalKey();
+
   final TextEditingController _baseUrlController = TextEditingController(
     text: 'http://10.0.2.2:8000',
   );
-  final LivePoseStreamService _livePoseService = LivePoseStreamService();
   final VideoPoseAnalyzer _videoPoseAnalyzer = VideoPoseAnalyzer();
   final MediaInputService _mediaInputService = MediaInputService();
   final TextEditingController _chatController = TextEditingController();
-  _AnalysisSource _analysisSource = _AnalysisSource.uploadVideo;
   String _bodyType = 'N/A';
   XFile? _selectedVideo;
-  bool _liveStreaming = false;
+  _VideoInputSource? _selectedVideoSource;
   SquatPromptInput? _lastBuiltInput;
-  SquatPromptInput? _lastFinalizedRepInput;
-  int _finalizedRepCount = 0;
   double _videoProgress = 0;
   bool _analyzingVideo = false;
   final List<_RepFeedbackEntry> _repFeedbacks = [];
   List<PoseDebugSnapshot> _debugSnapshots = const [];
 
   bool _isLoading = false;
-  String? _error;
+  Object? _error;
   FeedbackResult? _result;
   bool _chatLoading = false;
   final List<_ChatMessageEntry> _chatMessages = [];
   bool get _hasSelectedBodyType => _bodyType != 'N/A';
+
+  void _setAnalyzeError(Object error) {
+    if (!mounted) return;
+    setState(() {
+      _error = error;
+    });
+    _scheduleScrollErrorIntoView();
+  }
+
+  void _scheduleScrollErrorIntoView() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _errorBannerKey.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.12,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
 
   @override
   void initState() {
@@ -590,62 +661,53 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   void dispose() {
     _baseUrlController.dispose();
     _chatController.dispose();
-    _livePoseService.dispose();
     _videoPoseAnalyzer.dispose();
     super.dispose();
   }
 
-  Future<void> _startLivePose() async {
-    if (!_hasSelectedBodyType) {
-      setState(() {
-        _error = 'Body Type is required. Please select one before starting.';
-      });
-      return;
-    }
-    try {
-      await _livePoseService.start(
-        bodyType: _bodyType,
-        thresholds: _selectedThresholds,
-        onInputUpdated: (input) {
-          if (!mounted) return;
-          setState(() {
-            _lastBuiltInput = input;
-          });
-        },
-        onRepFinalized: (repInput) {
-          if (!mounted) return;
-          setState(() {
-            _lastFinalizedRepInput = repInput;
-            _finalizedRepCount += 1;
-          });
-          _generateFeedbackForInput(repInput);
-        },
-      );
-      if (!mounted) return;
-      setState(() {
-        _liveStreaming = true;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = 'Live pose start failed: $e';
-      });
-    }
-  }
-
-  Future<void> _stopLivePose() async {
-    await _livePoseService.stop();
-    if (!mounted) return;
-    setState(() {
-      _liveStreaming = false;
-    });
-  }
-
   Future<void> _pickVideo() async {
-    final video = await _mediaInputService.pickSquatVideo();
+    final source = await showModalBottomSheet<_VideoInputSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text('Choose video source'),
+                subtitle: Text('Record now or choose an existing squat video'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.videocam_outlined),
+                title: const Text('Record with camera'),
+                subtitle: const Text('Capture a new squat set'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop(_VideoInputSource.camera);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: const Text('Choose from files/gallery'),
+                subtitle: const Text('Pick an existing video from this device'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop(_VideoInputSource.gallery);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (source == null) return;
+    final video = source == _VideoInputSource.camera
+        ? await _mediaInputService.pickSquatVideoFromCamera()
+        : await _mediaInputService.pickSquatVideoFromGallery();
     if (!mounted) return;
     setState(() {
       _selectedVideo = video;
+      _selectedVideoSource = video == null ? null : source;
     });
   }
 
@@ -701,7 +763,8 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         _chatMessages.add(
           _ChatMessageEntry(
             isUser: false,
-            text: 'Coach chat failed: $e',
+            text:
+                "Couldn't reach the coach. ${_errorSummaryForDisplay(e)}",
           ),
         );
       });
@@ -721,15 +784,13 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
 
   Future<void> _analyzeSelectedVideo() async {
     if (!_hasSelectedBodyType) {
-      setState(() {
-        _error = 'Body Type is required. Please select one before analysis.';
-      });
+      _setAnalyzeError(
+        'Body Type is required. Please select one before analysis.',
+      );
       return;
     }
     if (_selectedVideo == null) {
-      setState(() {
-        _error = 'Please pick a video first.';
-      });
+      _setAnalyzeError('Please pick a video first.');
       return;
     }
     setState(() {
@@ -741,7 +802,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       _repFeedbacks.clear();
       _debugSnapshots = const [];
     });
-    #check
+
     try {
       final analysis = await _videoPoseAnalyzer.analyzeVideo(
         videoPath: _selectedVideo!.path,
@@ -781,16 +842,13 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         );
       }
       if (analysis.reps.isEmpty && mounted) {
-        setState(() {
-          _error =
-              'No reps were finalized from this video. Try a clearer side-view squat video.';
-        });
+        _setAnalyzeError(
+          'No reps were finalized from this video. Try a clearer side-view squat video.',
+        );
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-      });
+      _setAnalyzeError(e);
     } finally {
       if (mounted) {
         setState(() {
@@ -802,50 +860,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   }
 
   ThresholdProfile get _selectedThresholds => beginnerThresholds;
-
-  Future<void> _generateFromLatestLiveRep() async {
-    final input = _lastFinalizedRepInput ?? _livePoseService.lastInput;
-    if (input == null) {
-      setState(() {
-        _error = 'No live rep input available yet. Start live pose first.';
-      });
-      return;
-    }
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-    try {
-      final result = await _generateFeedbackForInput(input);
-      if (!mounted) return;
-      setState(() {
-        _lastBuiltInput = input;
-        _result = result;
-        _repFeedbacks.add(_RepFeedbackEntry(input: input, result: result));
-      });
-      await widget.onSessionRecorded?.call(
-        SessionHistoryEntry(
-          createdAtIso: DateTime.now().toIso8601String(),
-          source: 'live_camera',
-          bodyType: _bodyType,
-          repCount: 1,
-          acceptableCount: input.acceptable ? 1 : 0,
-          topIssue: _topIssueFromReps([input]),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
 
   String _topIssueFromReps(List<SquatPromptInput> reps) {
     var heels = 0;
@@ -872,13 +886,23 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   List<Widget> _buildAnalyzeSections(BuildContext context) {
     return [
       _buildHeaderSection(context),
+      if (_isLoading || _analyzingVideo) _buildAnalysisProgressStrip(context),
       _buildConfigSection(context),
+      _buildPrivacyFootnote(context),
       if (!kIsWeb) _buildCaptureSection(context),
       _buildFlowSection(context),
       if (_error != null)
-        Text(
-          _error!,
-          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        KeyedSubtree(
+          key: _errorBannerKey,
+          child: _AnalyzeErrorBanner(
+            error: _error!,
+            onDismiss: () {
+              HapticFeedback.lightImpact();
+              setState(() {
+                _error = null;
+              });
+            },
+          ),
         ),
       if (_result != null) _buildLatestFeedbackSection(context),
       if (_repFeedbacks.isNotEmpty) ..._buildPerRepFeedbackSection(context),
@@ -896,7 +920,8 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           Text('Analyze Session', style: theme.textTheme.titleLarge),
           const SizedBox(height: 6),
           Text(
-            'Upload a squat set or stream live to get rep-level form feedback.',
+            'Upload a squat set to get rep-level form feedback. '
+            'Use a stable side view and good lighting for best results.',
             style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -906,7 +931,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             children: [
               _InfoPill(
                 icon: Icons.route_outlined,
-                text: _analysisSource == _AnalysisSource.uploadVideo ? 'Mode: Upload' : 'Mode: Live',
+                text: 'Mode: Upload Video',
               ),
               _InfoPill(
                 icon: _hasSelectedBodyType ? Icons.check_circle_outline : Icons.error_outline,
@@ -914,6 +939,58 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
                 accent: _hasSelectedBodyType ? Colors.green : Colors.orange,
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAnalysisProgressStrip(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return OptiCard(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _analyzingVideo ? 'Analyzing video frames…' : 'Working…',
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              minHeight: 5,
+              value: _analyzingVideo ? _videoProgress.clamp(0.0, 1.0) : null,
+              backgroundColor: scheme.surfaceContainerHighest,
+            ),
+          ),
+          if (_analyzingVideo) ...[
+            const SizedBox(height: 6),
+            Text(
+              '${(100 * _videoProgress).round()}% · pose + reps on device',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPrivacyFootnote(BuildContext context) {
+    final theme = Theme.of(context);
+    return OptiCard(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.shield_outlined, size: 22, color: theme.colorScheme.primary),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Video and pose landmarks are processed on this device. '
+              'AI feedback and coach chat send rep summaries to the backend URL above — use a network you trust.',
+              style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
+            ),
           ),
         ],
       ),
@@ -967,7 +1044,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           _buildSectionHeader(
             context,
             title: 'Configuration',
-            subtitle: 'Set backend, analysis mode, and body profile',
+            subtitle: 'Set backend and body profile',
             icon: Icons.tune,
           ),
           TextField(
@@ -977,25 +1054,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
               hintText: 'http://10.0.2.2:8000',
               border: OutlineInputBorder(),
             ),
-          ),
-          const SizedBox(height: 12),
-          SegmentedButton<_AnalysisSource>(
-            segments: const [
-              ButtonSegment<_AnalysisSource>(
-                value: _AnalysisSource.uploadVideo,
-                label: Text('Upload Video'),
-              ),
-              ButtonSegment<_AnalysisSource>(
-                value: _AnalysisSource.liveCamera,
-                label: Text('Live Camera'),
-              ),
-            ],
-            selected: {_analysisSource},
-            onSelectionChanged: (selection) {
-              setState(() {
-                _analysisSource = selection.first;
-              });
-            },
           ),
           const SizedBox(height: 8),
           DropdownButtonFormField<String>(
@@ -1032,7 +1090,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           if (!_hasSelectedBodyType) ...[
             const SizedBox(height: 6),
             Text(
-              'Select a body type to proceed with video or live analysis.',
+              'Select a body type to proceed with video analysis.',
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ],
@@ -1049,70 +1107,37 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           _buildSectionHeader(
             context,
             title: 'Input Source',
-            subtitle: 'Capture data from video upload or live camera',
+            subtitle: 'Record or pick a squat video for analysis',
             icon: Icons.video_camera_back_outlined,
           ),
-          if (_analysisSource == _AnalysisSource.uploadVideo) ...[
+          SizedBox(
+            child: OptiButton(
+              label: _selectedVideo == null ? 'Pick Squat Video' : 'Video Selected',
+              variant: OptiButtonVariant.outlined,
+              onPressed: _isLoading || _analyzingVideo ? null : _pickVideo,
+            ),
+          ),
+          if (_selectedVideo != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Selected video: ${_selectedVideo!.name}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Source: ${_selectedVideoSource == _VideoInputSource.camera ? 'Camera capture' : 'Files/Gallery'}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
             SizedBox(
               child: OptiButton(
-                label: _selectedVideo == null ? 'Pick Squat Video' : 'Video Selected',
-                variant: OptiButtonVariant.outlined,
-                onPressed: _isLoading || _analyzingVideo ? null : _pickVideo,
+                onPressed: _isLoading ? null : _analyzeSelectedVideo,
+                label: _analyzingVideo
+                    ? 'Analyzing video... ${(100 * _videoProgress).round()}%'
+                    : 'Analyze Uploaded Video',
+                loading: _isLoading && _selectedVideo != null,
               ),
             ),
-            if (_selectedVideo != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                'Selected video: ${_selectedVideo!.name}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                child: OptiButton(
-                  onPressed: _isLoading ? null : _analyzeSelectedVideo,
-                  label: _analyzingVideo
-                      ? 'Analyzing video... ${(100 * _videoProgress).round()}%'
-                      : 'Analyze Uploaded Video',
-                ),
-              ),
-            ],
-          ] else ...[
-            Row(
-              children: [
-                Expanded(
-                  child: OptiButton(
-                    variant: OptiButtonVariant.outlined,
-                    onPressed: _isLoading || _liveStreaming ? null : _startLivePose,
-                    label: 'Start Live Pose',
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OptiButton(
-                    variant: OptiButtonVariant.outlined,
-                    onPressed: _isLoading || !_liveStreaming ? null : _stopLivePose,
-                    label: 'Stop Live Pose',
-                  ),
-                ),
-              ],
-            ),
-            if (_livePoseService.controller != null) ...[
-              const SizedBox(height: 8),
-              AspectRatio(
-                aspectRatio: _livePoseService.controller!.value.aspectRatio,
-                child: CameraPreview(_livePoseService.controller!),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Finalized reps: $_finalizedRepCount',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              if (_lastFinalizedRepInput != null)
-                Text(
-                  'Last finalized summary: ${_lastFinalizedRepInput!.summaryText}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-            ],
           ],
         ],
       ),
@@ -1131,7 +1156,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             icon: Icons.account_tree_outlined,
           ),
           Text(
-            'Flow: Upload/Live -> on-device metrics (body-type thresholds) -> feedback per rep.',
+            'Flow: Upload video -> on-device metrics (body-type thresholds) -> feedback per rep.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           if (_lastBuiltInput != null) ...[
@@ -1141,15 +1166,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
-          const SizedBox(height: 12),
-          SizedBox(
-            child: OptiButton(
-              onPressed: _analysisSource == _AnalysisSource.liveCamera
-                  ? (_isLoading ? null : _generateFromLatestLiveRep)
-                  : null,
-              label: _isLoading ? 'Generating...' : 'Generate from Latest Live Rep',
-            ),
-          ),
         ],
       ),
     );
@@ -1334,6 +1350,78 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: _buildAnalyzeSections(context),
         ),
+      ),
+    );
+  }
+}
+
+class _AnalyzeErrorBanner extends StatelessWidget {
+  const _AnalyzeErrorBanner({
+    required this.error,
+    required this.onDismiss,
+  });
+
+  final Object error;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final detail = _stringifyError(error);
+    final summary = _errorSummaryForDisplay(error);
+    final showDetail = summary.trim() != detail.trim();
+
+    return OptiCard(
+      padding: const EdgeInsets.fromLTRB(10, 6, 4, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.error_outline, color: scheme.error, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    summary,
+                    style: theme.textTheme.bodyMedium?.copyWith(height: 1.35),
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 20),
+                tooltip: 'Dismiss',
+                onPressed: onDismiss,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+          if (showDetail)
+            Padding(
+              padding: const EdgeInsets.only(left: 32, right: 4),
+              child: Theme(
+                data: theme.copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(bottom: 4),
+                  dense: true,
+                  title: Text(
+                    'Technical details',
+                    style: theme.textTheme.labelLarge?.copyWith(color: scheme.primary),
+                  ),
+                  children: [
+                    SelectableText(
+                      detail,
+                      style: theme.textTheme.bodySmall?.copyWith(height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

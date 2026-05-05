@@ -12,4 +12,17 @@ class MediaInputService {
   Future<XFile?> pickSquatVideo() {
     return _picker.pickVideo(source: ImageSource.gallery);
   }
+
+  Future<XFile?> pickSquatVideoFromGallery() {
+    return _picker.pickVideo(source: ImageSource.gallery);
+  }
+
+  Future<XFile?> pickSquatVideoFromCamera({
+    Duration? maxDuration,
+  }) {
+    return _picker.pickVideo(
+      source: ImageSource.camera,
+      maxDuration: maxDuration,
+    );
+  }
 }

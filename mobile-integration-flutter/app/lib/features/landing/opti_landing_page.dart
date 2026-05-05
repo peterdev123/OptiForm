@@ -141,7 +141,7 @@ class OptiLandingPage extends StatelessWidget {
                       heroAssetPath,
                       fit: BoxFit.contain,
                       filterQuality: FilterQuality.high,
-                      errorBuilder: (context, _, __) {
+                      errorBuilder: (context, error, stackTrace) {
                         return Center(
                           child: Container(
                             margin: const EdgeInsets.symmetric(horizontal: 18),
@@ -278,6 +278,15 @@ class _BottomCtaCard extends StatelessWidget {
                 textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
               ),
               child: const Text('Start Now'),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Pose analysis runs on your device. Coaching connects to your own backend when you configure it.',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.62),
+                fontSize: 11,
+                height: 1.38,
+              ),
             ),
             const Spacer(),
           ],
