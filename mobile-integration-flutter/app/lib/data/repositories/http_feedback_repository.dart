@@ -11,31 +11,22 @@ class HttpFeedbackRepository implements FeedbackRepository {
   final String baseUrl;
   final http.Client client;
   final Duration timeout;
-  final String? apiKey;
-  final String apiKeyHeader;
 
   HttpFeedbackRepository({
     required this.baseUrl,
     required this.client,
     this.timeout = const Duration(seconds: 360),
-    this.apiKey,
-    this.apiKeyHeader = 'x-api-key',
   });
 
-  Map<String, String> get _requestHeaders {
-    final headers = <String, String>{'Content-Type': 'application/json'};
-    final key = apiKey?.trim() ?? '';
-    if (key.isNotEmpty) {
-      headers[apiKeyHeader] = key;
-    }
-    return headers;
-  }
+  static const Map<String, String> _jsonHeaders = {
+    'Content-Type': 'application/json',
+  };
 
   @override
   Future<FeedbackResult> generateFeedback({
     required String instruction,
     required SquatPromptInput input,
-    String modelVariant = 'finetuned',
+    String modelVariant = 'model_1',
   }) async {
     final uri = Uri.parse('$baseUrl/api/v1/feedback/generate');
     final body = {
@@ -48,7 +39,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
     final response = await client
         .post(
           uri,
-          headers: _requestHeaders,
+          headers: _jsonHeaders,
           body: jsonEncode(body),
         )
         .timeout(timeout);
@@ -67,7 +58,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
     required String question,
     required String bodyType,
     List<String> recentRepSummaries = const [],
-    String modelVariant = 'finetuned',
+    String modelVariant = 'model_1',
   }) async {
     final uri = Uri.parse('$baseUrl/api/v1/chat');
     final body = {
@@ -80,7 +71,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
     final response = await client
         .post(
           uri,
-          headers: _requestHeaders,
+          headers: _jsonHeaders,
           body: jsonEncode(body),
         )
         .timeout(timeout);

@@ -38,12 +38,12 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 
 Set these in your deployment environment:
 
-- `SQUAT_BASE_MODEL`
-- `SQUAT_DEFAULT_MODEL_VARIANT` (e.g. `finetuned` or `base`)
+- `SQUAT_QWEN_BASE_MODEL`
+- `SQUAT_MISTRAL_BASE_MODEL`
+- `SQUAT_MISTRAL_LORA_PATH` (optional path from repository root)
+- `SQUAT_DEFAULT_MODEL_VARIANT` (`model_1` for Qwen, `model_2` for Mistral7B)
 - `SQUAT_FINETUNED_MODEL_PATH` (path from repository root)
 - `ALLOWED_ORIGINS` (comma-separated origins; use `*` only for development)
-- `API_KEY` (optional but recommended in production)
-- `API_KEY_HEADER` (default: `x-api-key`)
 - `RATE_LIMIT_PER_MINUTE` (set `0` to disable)
 - `RATE_LIMIT_WINDOW_SECONDS`
 
@@ -51,8 +51,10 @@ Set these in your deployment environment:
 
 - Ensure finetuned checkpoint files exist on the server before starting.
 - Health checks should target `GET /health` for quick deployment validation.
-- Protected endpoints enforce optional API key and rate limiting:
-  - if `API_KEY` is set, clients must send it in `API_KEY_HEADER`.
+- Protected endpoints enforce rate limiting (per client IP).
+- Mobile model choices:
+  - `model_1` -> Qwen 2.5 (with LoRA path if available)
+  - `model_2` -> Mistral 7B (uses `SQUAT_MISTRAL_LORA_PATH` when set)
 - The mobile app expects this backend base URL plus:
   - `/api/v1/feedback/generate`
   - `/api/v1/chat`

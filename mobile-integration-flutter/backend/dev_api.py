@@ -13,21 +13,28 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-DEFAULT_MODEL_VARIANT = os.getenv("SQUAT_DEFAULT_MODEL_VARIANT", "finetuned")
+DEFAULT_MODEL_VARIANT = os.getenv("SQUAT_DEFAULT_MODEL_VARIANT", "model_1")
 FINETUNED_MODEL_RELATIVE_PATH = os.getenv(
     "SQUAT_FINETUNED_MODEL_PATH",
     "Fine-Tuning/qwen2p5-3b-squat-lora/qwen2p5-3b-squat-lora/checkpoint-450",
 )
+QWEN_BASE_MODEL = os.getenv(
+    "SQUAT_QWEN_BASE_MODEL",
+    os.getenv("SQUAT_BASE_MODEL", "unsloth/qwen2.5-3b-instruct-unsloth-bnb-4bit"),
+)
+MISTRAL_BASE_MODEL = os.getenv(
+    "SQUAT_MISTRAL_BASE_MODEL",
+    "mistralai/Mistral-7B-Instruct-v0.3",
+)
+MISTRAL_LORA_RELATIVE_PATH = os.getenv("SQUAT_MISTRAL_LORA_PATH", "").strip() or None
 ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS", "*")
 ALLOWED_ORIGINS = [
     origin.strip() for origin in ALLOWED_ORIGINS_RAW.split(",") if origin.strip()
 ]
 if not ALLOWED_ORIGINS:
     ALLOWED_ORIGINS = ["*"]
-API_KEY = os.getenv("API_KEY", "").strip()
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
-API_KEY_HEADER = os.getenv("API_KEY_HEADER", "x-api-key").strip().lower()
 _rate_limit_hits: Dict[str, deque[float]] = defaultdict(deque)
 _rate_limit_lock = Lock()
 
@@ -40,13 +47,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_MODEL = os.getenv(
-    "SQUAT_BASE_MODEL",
-    "unsloth/qwen2.5-3b-instruct-unsloth-bnb-4bit",
-)
 MODEL_VARIANTS = {
-    "finetuned": FINETUNED_MODEL_RELATIVE_PATH,
-    "base": None,
+    # Explicit mobile-facing labels for two deployed models.
+    "model_1": {
+        "name": "qwen2.5-3b",
+        "base_model": QWEN_BASE_MODEL,
+        "lora_path": FINETUNED_MODEL_RELATIVE_PATH,
+    },
+    "model_2": {
+        "name": "mistral-7b",
+        "base_model": MISTRAL_BASE_MODEL,
+        "lora_path": MISTRAL_LORA_RELATIVE_PATH,
+    },
+    # Backward compatibility for existing clients/config.
+    "finetuned": {
+        "name": "qwen2.5-3b-finetuned",
+        "base_model": QWEN_BASE_MODEL,
+        "lora_path": FINETUNED_MODEL_RELATIVE_PATH,
+    },
+    "base": {
+        "name": "qwen2.5-3b-base",
+        "base_model": QWEN_BASE_MODEL,
+        "lora_path": None,
+    },
 }
 DATASET_STYLE_INSTRUCTION = """You are an expert back squat coach. Using only the squat data (body type, heels, torso, knees, elbows, depth, acceptable), reply in exactly this format and nothing else:
 
@@ -67,15 +90,6 @@ _model_lock = Lock()
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
-
-
-def _require_api_key(request: Request) -> None:
-    if not API_KEY:
-        return
-    provided = request.headers.get(API_KEY_HEADER)
-    if provided == API_KEY:
-        return
-    raise HTTPException(status_code=401, detail="Invalid API key.")
 
 
 def _enforce_rate_limit(request: Request) -> None:
@@ -213,13 +227,18 @@ def _summary_to_structured_input(summary: str) -> Dict[str, Any]:
     }
 
 
-def _resolve_lora_path(model_variant: str) -> Optional[str]:
+def _resolve_variant_config(model_variant: str) -> Dict[str, Optional[str]]:
     fallback_variant = (
         DEFAULT_MODEL_VARIANT
         if DEFAULT_MODEL_VARIANT in MODEL_VARIANTS
-        else "finetuned"
+        else "model_1"
     )
-    relative_path = MODEL_VARIANTS.get(model_variant, MODEL_VARIANTS[fallback_variant])
+    return MODEL_VARIANTS.get(model_variant, MODEL_VARIANTS[fallback_variant])
+
+
+def _resolve_lora_path(model_variant: str) -> Optional[str]:
+    config = _resolve_variant_config(model_variant)
+    relative_path = config.get("lora_path")
     if relative_path is None:
         return None
     absolute_path = (_project_root() / relative_path).resolve()
@@ -231,7 +250,7 @@ def _resolve_variant_or_default(requested_variant: str) -> str:
         return requested_variant
     if DEFAULT_MODEL_VARIANT in MODEL_VARIANTS:
         return DEFAULT_MODEL_VARIANT
-    return "finetuned"
+    return "model_1"
 
 
 def _load_runtime_model(model_variant: str) -> Tuple[Any, Any]:
@@ -243,7 +262,12 @@ def _load_runtime_model(model_variant: str) -> Tuple[Any, Any]:
         from peft import PeftModel
         import torch
 
-        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, trust_remote_code=True)
+        variant_config = _resolve_variant_config(model_variant)
+        base_model = variant_config["base_model"]
+        if not base_model:
+            raise RuntimeError(f"Missing base_model for variant '{model_variant}'.")
+
+        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -255,7 +279,7 @@ def _load_runtime_model(model_variant: str) -> Tuple[Any, Any]:
             bnb_4bit_use_double_quant=True,
         )
         model = AutoModelForCausalLM.from_pretrained(
-            BASE_MODEL,
+            base_model,
             quantization_config=bnb_config,
             device_map="auto",
             trust_remote_code=True,
@@ -425,7 +449,6 @@ async def analyze_pose_video(
 
 @app.post("/api/v1/feedback/generate")
 def generate_feedback(req: FeedbackRequest, request: Request):
-    _require_api_key(request)
     _enforce_rate_limit(request)
     started = time.perf_counter()
     variant = _resolve_variant_or_default(req.model_variant)
@@ -437,7 +460,7 @@ def generate_feedback(req: FeedbackRequest, request: Request):
             structured_input=req.structured_input,
             model_variant=variant,
         )
-        model_name = f"qwen2.5-3b-{variant}"
+        model_name = _resolve_variant_config(variant)["name"] or variant
     except Exception as exc:
         # Keep mobile integration stable while surfacing useful context for debugging.
         feedback_text = f"Fallback coaching: {req.input_summary}"
@@ -454,7 +477,6 @@ def generate_feedback(req: FeedbackRequest, request: Request):
 
 @app.post("/api/v1/chat")
 def chat_coach(req: ChatRequest, request: Request):
-    _require_api_key(request)
     _enforce_rate_limit(request)
     started = time.perf_counter()
     variant = _resolve_variant_or_default(req.model_variant)
@@ -466,7 +488,7 @@ def chat_coach(req: ChatRequest, request: Request):
             recent_rep_summaries=req.recent_rep_summaries,
             model_variant=variant,
         )
-        model_name = f"qwen2.5-3b-{variant}"
+        model_name = _resolve_variant_config(variant)["name"] or variant
     except Exception as exc:
         answer_text = (
             "I could not access the fine-tuned coach right now. "

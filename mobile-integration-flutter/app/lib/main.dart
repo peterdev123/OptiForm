@@ -611,11 +611,11 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   final TextEditingController _baseUrlController = TextEditingController(
     text: 'http://10.0.2.2:8000',
   );
-  final TextEditingController _apiKeyController = TextEditingController();
   final VideoPoseAnalyzer _videoPoseAnalyzer = VideoPoseAnalyzer();
   final MediaInputService _mediaInputService = MediaInputService();
   final TextEditingController _chatController = TextEditingController();
   String _bodyType = 'N/A';
+  String _selectedModelVariant = 'model_1';
   XFile? _selectedVideo;
   _VideoInputSource? _selectedVideoSource;
   SquatPromptInput? _lastBuiltInput;
@@ -661,7 +661,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   @override
   void dispose() {
     _baseUrlController.dispose();
-    _apiKeyController.dispose();
     _chatController.dispose();
     _videoPoseAnalyzer.dispose();
     super.dispose();
@@ -717,11 +716,11 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     final repo = HttpFeedbackRepository(
       baseUrl: _baseUrlController.text.trim(),
       client: http.Client(),
-      apiKey: _apiKeyController.text.trim(),
     );
     return repo.generateFeedback(
       instruction: 'Give short corrective coaching feedback for this squat rep.',
       input: input,
+      modelVariant: _selectedModelVariant,
     );
   }
 
@@ -738,7 +737,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     final repo = HttpFeedbackRepository(
       baseUrl: _baseUrlController.text.trim(),
       client: http.Client(),
-      apiKey: _apiKeyController.text.trim(),
     );
     final recentSummaries = _repFeedbacks
         .map((entry) => entry.input.summaryText)
@@ -750,6 +748,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         question: question,
         bodyType: _bodyType,
         recentRepSummaries: recentSummaries,
+        modelVariant: _selectedModelVariant,
       );
       if (!mounted) return;
       setState(() {
@@ -1060,14 +1059,31 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             ),
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _apiKeyController,
-            obscureText: true,
+          DropdownButtonFormField<String>(
+            initialValue: _selectedModelVariant,
             decoration: const InputDecoration(
-              labelText: 'API Key (Optional)',
-              hintText: 'x-api-key value for protected backend',
+              labelText: 'AI Model',
               border: OutlineInputBorder(),
             ),
+            items: const [
+              DropdownMenuItem(
+                value: 'model_1',
+                child: Text('Model 1 (Qwen 2.5)'),
+              ),
+              DropdownMenuItem(
+                value: 'model_2',
+                child: Text('Model 2 (Mistral 7B)'),
+              ),
+            ],
+            onChanged: _isLoading
+                ? null
+                : (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _selectedModelVariant = value;
+                      _error = null;
+                    });
+                  },
           ),
           const SizedBox(height: 8),
           DropdownButtonFormField<String>(
