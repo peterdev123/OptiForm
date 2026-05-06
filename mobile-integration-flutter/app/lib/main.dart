@@ -15,6 +15,7 @@ import 'domain/models/squat_prompt_input.dart';
 import 'features/landing/opti_landing_page.dart';
 import 'features/pose_processing/video_pose_analyzer.dart';
 import 'features/rule_engine/thresholds.dart';
+import 'features/settings/settings_page.dart';
 import 'features/video_input/media_input_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/metric_tile.dart';
@@ -154,6 +155,7 @@ class _AppShellState extends State<AppShell> {
   int _currentIndex = 0;
   List<SessionHistoryEntry> _historyEntries = const [];
   bool _showLanding = false;
+  String _backendUrl = kDefaultBackendUrl;
 
   @override
   void initState() {
@@ -165,6 +167,7 @@ class _AppShellState extends State<AppShell> {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList(_historyStorageKey) ?? const [];
     final landingSeen = prefs.getBool(_landingSeenKey) ?? false;
+    final savedUrl = prefs.getString(kBackendUrlPrefKey) ?? kDefaultBackendUrl;
     final parsed = <SessionHistoryEntry>[];
     for (final item in raw) {
       try {
@@ -176,6 +179,7 @@ class _AppShellState extends State<AppShell> {
     setState(() {
       _historyEntries = parsed;
       _showLanding = !landingSeen;
+      _backendUrl = savedUrl;
     });
   }
 
@@ -216,8 +220,18 @@ class _AppShellState extends State<AppShell> {
           });
         },
       ),
-      FeedbackDemoPage(onSessionRecorded: _onSessionRecorded),
+      FeedbackDemoPage(
+        onSessionRecorded: _onSessionRecorded,
+        backendUrl: _backendUrl,
+      ),
       HistoryPage(entries: _historyEntries),
+      SettingsPage(
+        onBackendUrlChanged: (url) {
+          setState(() {
+            _backendUrl = url;
+          });
+        },
+      ),
     ];
 
     return Scaffold(
@@ -252,6 +266,11 @@ class _AppShellState extends State<AppShell> {
             icon: Icon(Icons.history_outlined),
             activeIcon: Icon(Icons.history),
             label: 'History',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings_outlined),
+            activeIcon: Icon(Icons.settings),
+            label: 'Settings',
           ),
         ],
       ),
@@ -447,9 +466,14 @@ class _IntroStep extends StatelessWidget {
 }
 
 class FeedbackDemoPage extends StatefulWidget {
-  const FeedbackDemoPage({super.key, this.onSessionRecorded});
+  const FeedbackDemoPage({
+    super.key,
+    this.onSessionRecorded,
+    this.backendUrl = kDefaultBackendUrl,
+  });
 
   final Future<void> Function(SessionHistoryEntry entry)? onSessionRecorded;
+  final String backendUrl;
 
   @override
   State<FeedbackDemoPage> createState() => _FeedbackDemoPageState();
@@ -608,9 +632,6 @@ enum _VideoInputSource { camera, gallery }
 class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   final GlobalKey _errorBannerKey = GlobalKey();
 
-  final TextEditingController _baseUrlController = TextEditingController(
-    text: 'http://10.0.2.2:8000',
-  );
   final VideoPoseAnalyzer _videoPoseAnalyzer = VideoPoseAnalyzer();
   final MediaInputService _mediaInputService = MediaInputService();
   final TextEditingController _chatController = TextEditingController();
@@ -659,7 +680,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
 
   @override
   void dispose() {
-    _baseUrlController.dispose();
     _chatController.dispose();
     _videoPoseAnalyzer.dispose();
     super.dispose();
@@ -713,7 +733,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
 
   Future<FeedbackResult> _generateFeedbackForInput(SquatPromptInput input) async {
     final repo = HttpFeedbackRepository(
-      baseUrl: _baseUrlController.text.trim(),
+      baseUrl: widget.backendUrl,
       client: http.Client(),
     );
     return repo.generateFeedback(
@@ -733,7 +753,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     _chatController.clear();
 
     final repo = HttpFeedbackRepository(
-      baseUrl: _baseUrlController.text.trim(),
+      baseUrl: widget.backendUrl,
       client: http.Client(),
     );
     final recentSummaries = _repFeedbacks
@@ -988,7 +1008,8 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           Expanded(
             child: Text(
               'Video and pose landmarks are processed on this device. '
-              'AI feedback and coach chat send rep summaries to the backend URL above — use a network you trust.',
+              'AI feedback and coach chat send rep summaries to the backend — use a network you trust. '
+              'Change the backend URL in the Settings tab.',
               style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
             ),
           ),
@@ -1044,18 +1065,9 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           _buildSectionHeader(
             context,
             title: 'Configuration',
-            subtitle: 'Set backend and body profile',
+            subtitle: 'Set body profile. Change backend URL in Settings.',
             icon: Icons.tune,
           ),
-          TextField(
-            controller: _baseUrlController,
-            decoration: const InputDecoration(
-              labelText: 'Backend Base URL',
-              hintText: 'http://10.0.2.2:8000',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 8),
           DropdownButtonFormField<String>(
             initialValue: _bodyType,
             decoration: const InputDecoration(
