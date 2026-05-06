@@ -5,6 +5,6 @@ abstract class FeedbackRepository {
   Future<FeedbackResult> generateFeedback({
     required String instruction,
     required SquatPromptInput input,
-    String modelVariant = 'model_1',
+    String modelVariant = 'finetuned',
   });
 }

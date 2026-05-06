@@ -26,7 +26,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
   Future<FeedbackResult> generateFeedback({
     required String instruction,
     required SquatPromptInput input,
-    String modelVariant = 'model_1',
+    String modelVariant = 'finetuned',
   }) async {
     final uri = Uri.parse('$baseUrl/api/v1/feedback/generate');
     final body = {
@@ -58,7 +58,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
     required String question,
     required String bodyType,
     List<String> recentRepSummaries = const [],
-    String modelVariant = 'model_1',
+    String modelVariant = 'finetuned',
   }) async {
     final uri = Uri.parse('$baseUrl/api/v1/chat');
     final body = {

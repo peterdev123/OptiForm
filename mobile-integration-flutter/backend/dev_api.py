@@ -2,8 +2,10 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
@@ -13,7 +15,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-DEFAULT_MODEL_VARIANT = os.getenv("SQUAT_DEFAULT_MODEL_VARIANT", "model_1")
+DEFAULT_MODEL_VARIANT = os.getenv("SQUAT_DEFAULT_MODEL_VARIANT", "finetuned")
 FINETUNED_MODEL_RELATIVE_PATH = os.getenv(
     "SQUAT_FINETUNED_MODEL_PATH",
     "Fine-Tuning/qwen2p5-3b-squat-lora/qwen2p5-3b-squat-lora/checkpoint-450",
@@ -22,11 +24,6 @@ QWEN_BASE_MODEL = os.getenv(
     "SQUAT_QWEN_BASE_MODEL",
     os.getenv("SQUAT_BASE_MODEL", "unsloth/qwen2.5-3b-instruct-unsloth-bnb-4bit"),
 )
-MISTRAL_BASE_MODEL = os.getenv(
-    "SQUAT_MISTRAL_BASE_MODEL",
-    "mistralai/Mistral-7B-Instruct-v0.3",
-)
-MISTRAL_LORA_RELATIVE_PATH = os.getenv("SQUAT_MISTRAL_LORA_PATH", "").strip() or None
 ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS", "*")
 ALLOWED_ORIGINS = [
     origin.strip() for origin in ALLOWED_ORIGINS_RAW.split(",") if origin.strip()
@@ -35,10 +32,76 @@ if not ALLOWED_ORIGINS:
     ALLOWED_ORIGINS = ["*"]
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+SKIP_MODEL_WARMUP = os.getenv("SKIP_MODEL_WARMUP", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+MODEL_WARMUP_BLOCKING = os.getenv("MODEL_WARMUP_BLOCKING", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 _rate_limit_hits: Dict[str, deque[float]] = defaultdict(deque)
 _rate_limit_lock = Lock()
 
-app = FastAPI()
+_QWEN_FINETUNED = {
+    "name": "qwen2.5-3b",
+    "base_model": QWEN_BASE_MODEL,
+    "lora_path": FINETUNED_MODEL_RELATIVE_PATH,
+}
+_QWEN_BASE_ONLY = {
+    "name": "qwen2.5-3b-base",
+    "base_model": QWEN_BASE_MODEL,
+    "lora_path": None,
+}
+
+MODEL_VARIANTS = {
+    "finetuned": _QWEN_FINETUNED,
+    # Legacy client alias (same weights as finetuned).
+    "model_1": _QWEN_FINETUNED,
+    "base": _QWEN_BASE_ONLY,
+}
+
+_warmup_lock = Lock()
+_warmup_done = threading.Event()
+_warmup_error: Optional[str] = None
+
+
+def _warmup_target_variant() -> str:
+    return _resolve_variant_or_default(DEFAULT_MODEL_VARIANT)
+
+
+def _run_model_warmup() -> None:
+    global _warmup_error
+    variant = _warmup_target_variant()
+    try:
+        print(f"[dev_api] model warmup starting for variant={variant!r} …")
+        started = time.perf_counter()
+        _load_runtime_model(variant)
+        ms = int((time.perf_counter() - started) * 1000)
+        print(f"[dev_api] model warmup finished in {ms} ms")
+    except Exception as exc:
+        _warmup_error = str(exc)
+        print(f"[dev_api] model warmup failed: {exc}")
+    finally:
+        _warmup_done.set()
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    if not SKIP_MODEL_WARMUP:
+        if MODEL_WARMUP_BLOCKING:
+            with _warmup_lock:
+                _run_model_warmup()
+        else:
+            threading.Thread(target=_run_model_warmup, daemon=True).start()
+    else:
+        _warmup_done.set()
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -46,31 +109,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-MODEL_VARIANTS = {
-    # Explicit mobile-facing labels for two deployed models.
-    "model_1": {
-        "name": "qwen2.5-3b",
-        "base_model": QWEN_BASE_MODEL,
-        "lora_path": FINETUNED_MODEL_RELATIVE_PATH,
-    },
-    "model_2": {
-        "name": "mistral-7b",
-        "base_model": MISTRAL_BASE_MODEL,
-        "lora_path": MISTRAL_LORA_RELATIVE_PATH,
-    },
-    # Backward compatibility for existing clients/config.
-    "finetuned": {
-        "name": "qwen2.5-3b-finetuned",
-        "base_model": QWEN_BASE_MODEL,
-        "lora_path": FINETUNED_MODEL_RELATIVE_PATH,
-    },
-    "base": {
-        "name": "qwen2.5-3b-base",
-        "base_model": QWEN_BASE_MODEL,
-        "lora_path": None,
-    },
-}
 DATASET_STYLE_INSTRUCTION = """You are an expert back squat coach. Using only the squat data (body type, heels, torso, knees, elbows, depth, acceptable), reply in exactly this format and nothing else:
 
 Overall: <short sentence whether it is acceptable or needs work>
@@ -90,6 +128,21 @@ _model_lock = Lock()
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def health_ready() -> Dict[str, str]:
+    """Returns 503 until the default model has finished loading (or warmup was skipped)."""
+    if SKIP_MODEL_WARMUP:
+        return {"status": "ready", "warmup": "skipped"}
+    if not _warmup_done.is_set():
+        raise HTTPException(status_code=503, detail="Model is still loading.")
+    if _warmup_error:
+        raise HTTPException(status_code=503, detail=f"Model warmup failed: {_warmup_error}")
+    return {
+        "status": "ready",
+        "variant": _warmup_target_variant(),
+    }
 
 
 def _enforce_rate_limit(request: Request) -> None:
@@ -231,7 +284,7 @@ def _resolve_variant_config(model_variant: str) -> Dict[str, Optional[str]]:
     fallback_variant = (
         DEFAULT_MODEL_VARIANT
         if DEFAULT_MODEL_VARIANT in MODEL_VARIANTS
-        else "model_1"
+        else "finetuned"
     )
     return MODEL_VARIANTS.get(model_variant, MODEL_VARIANTS[fallback_variant])
 
@@ -250,7 +303,7 @@ def _resolve_variant_or_default(requested_variant: str) -> str:
         return requested_variant
     if DEFAULT_MODEL_VARIANT in MODEL_VARIANTS:
         return DEFAULT_MODEL_VARIANT
-    return "model_1"
+    return "finetuned"
 
 
 def _load_runtime_model(model_variant: str) -> Tuple[Any, Any]:

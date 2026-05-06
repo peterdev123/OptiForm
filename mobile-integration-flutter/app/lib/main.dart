@@ -615,7 +615,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   final MediaInputService _mediaInputService = MediaInputService();
   final TextEditingController _chatController = TextEditingController();
   String _bodyType = 'N/A';
-  String _selectedModelVariant = 'model_1';
   XFile? _selectedVideo;
   _VideoInputSource? _selectedVideoSource;
   SquatPromptInput? _lastBuiltInput;
@@ -720,7 +719,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     return repo.generateFeedback(
       instruction: 'Give short corrective coaching feedback for this squat rep.',
       input: input,
-      modelVariant: _selectedModelVariant,
     );
   }
 
@@ -748,7 +746,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         question: question,
         bodyType: _bodyType,
         recentRepSummaries: recentSummaries,
-        modelVariant: _selectedModelVariant,
       );
       if (!mounted) return;
       setState(() {
@@ -1057,33 +1054,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
               hintText: 'http://10.0.2.2:8000',
               border: OutlineInputBorder(),
             ),
-          ),
-          const SizedBox(height: 8),
-          DropdownButtonFormField<String>(
-            initialValue: _selectedModelVariant,
-            decoration: const InputDecoration(
-              labelText: 'AI Model',
-              border: OutlineInputBorder(),
-            ),
-            items: const [
-              DropdownMenuItem(
-                value: 'model_1',
-                child: Text('Model 1 (Qwen 2.5)'),
-              ),
-              DropdownMenuItem(
-                value: 'model_2',
-                child: Text('Model 2 (Mistral 7B)'),
-              ),
-            ],
-            onChanged: _isLoading
-                ? null
-                : (value) {
-                    if (value == null) return;
-                    setState(() {
-                      _selectedModelVariant = value;
-                      _error = null;
-                    });
-                  },
           ),
           const SizedBox(height: 8),
           DropdownButtonFormField<String>(
