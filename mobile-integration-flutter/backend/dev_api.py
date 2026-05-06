@@ -3,19 +3,38 @@ import re
 import sys
 import tempfile
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+DEFAULT_MODEL_VARIANT = os.getenv("SQUAT_DEFAULT_MODEL_VARIANT", "finetuned")
+FINETUNED_MODEL_RELATIVE_PATH = os.getenv(
+    "SQUAT_FINETUNED_MODEL_PATH",
+    "Fine-Tuning/qwen2p5-3b-squat-lora/qwen2p5-3b-squat-lora/checkpoint-450",
+)
+ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS", "*")
+ALLOWED_ORIGINS = [
+    origin.strip() for origin in ALLOWED_ORIGINS_RAW.split(",") if origin.strip()
+]
+if not ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS = ["*"]
+API_KEY = os.getenv("API_KEY", "").strip()
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+API_KEY_HEADER = os.getenv("API_KEY_HEADER", "x-api-key").strip().lower()
+_rate_limit_hits: Dict[str, deque[float]] = defaultdict(deque)
+_rate_limit_lock = Lock()
 
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,7 +45,7 @@ BASE_MODEL = os.getenv(
     "unsloth/qwen2.5-3b-instruct-unsloth-bnb-4bit",
 )
 MODEL_VARIANTS = {
-    "finetuned": "Fine-Tuning/qwen2p5-3b-squat-lora/qwen2p5-3b-squat-lora/checkpoint-450",
+    "finetuned": FINETUNED_MODEL_RELATIVE_PATH,
     "base": None,
 }
 DATASET_STYLE_INSTRUCTION = """You are an expert back squat coach. Using only the squat data (body type, heels, torso, knees, elbows, depth, acceptable), reply in exactly this format and nothing else:
@@ -44,16 +63,48 @@ Tips:
 _model_cache: Dict[str, Tuple[Any, Any]] = {}
 _model_lock = Lock()
 
+
+@app.get("/health")
+def health() -> Dict[str, str]:
+    return {"status": "ok"}
+
+
+def _require_api_key(request: Request) -> None:
+    if not API_KEY:
+        return
+    provided = request.headers.get(API_KEY_HEADER)
+    if provided == API_KEY:
+        return
+    raise HTTPException(status_code=401, detail="Invalid API key.")
+
+
+def _enforce_rate_limit(request: Request) -> None:
+    if RATE_LIMIT_PER_MINUTE <= 0:
+        return
+    now = time.time()
+    client_host = request.client.host if request.client else "unknown"
+    with _rate_limit_lock:
+        window = _rate_limit_hits[client_host]
+        while window and now - window[0] > RATE_LIMIT_WINDOW_SECONDS:
+            window.popleft()
+        if len(window) >= RATE_LIMIT_PER_MINUTE:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Try again shortly.",
+            )
+        window.append(now)
+
+
 class FeedbackRequest(BaseModel):
     instruction: str
     input_summary: str
-    model_variant: str = "finetuned"
+    model_variant: str = DEFAULT_MODEL_VARIANT
     structured_input: Dict[str, Any]
 
 
 class ChatRequest(BaseModel):
     question: str
-    model_variant: str = "finetuned"
+    model_variant: str = DEFAULT_MODEL_VARIANT
     body_type: str = "N/A"
     recent_rep_summaries: List[str] = []
 
@@ -163,11 +214,24 @@ def _summary_to_structured_input(summary: str) -> Dict[str, Any]:
 
 
 def _resolve_lora_path(model_variant: str) -> Optional[str]:
-    relative_path = MODEL_VARIANTS.get(model_variant, MODEL_VARIANTS["finetuned"])
+    fallback_variant = (
+        DEFAULT_MODEL_VARIANT
+        if DEFAULT_MODEL_VARIANT in MODEL_VARIANTS
+        else "finetuned"
+    )
+    relative_path = MODEL_VARIANTS.get(model_variant, MODEL_VARIANTS[fallback_variant])
     if relative_path is None:
         return None
     absolute_path = (_project_root() / relative_path).resolve()
     return str(absolute_path)
+
+
+def _resolve_variant_or_default(requested_variant: str) -> str:
+    if requested_variant in MODEL_VARIANTS:
+        return requested_variant
+    if DEFAULT_MODEL_VARIANT in MODEL_VARIANTS:
+        return DEFAULT_MODEL_VARIANT
+    return "finetuned"
 
 
 def _load_runtime_model(model_variant: str) -> Tuple[Any, Any]:
@@ -360,9 +424,11 @@ async def analyze_pose_video(
             pass
 
 @app.post("/api/v1/feedback/generate")
-def generate_feedback(req: FeedbackRequest):
+def generate_feedback(req: FeedbackRequest, request: Request):
+    _require_api_key(request)
+    _enforce_rate_limit(request)
     started = time.perf_counter()
-    variant = req.model_variant if req.model_variant in MODEL_VARIANTS else "finetuned"
+    variant = _resolve_variant_or_default(req.model_variant)
 
     try:
         feedback_text = _run_inference(
@@ -387,9 +453,11 @@ def generate_feedback(req: FeedbackRequest):
 
 
 @app.post("/api/v1/chat")
-def chat_coach(req: ChatRequest):
+def chat_coach(req: ChatRequest, request: Request):
+    _require_api_key(request)
+    _enforce_rate_limit(request)
     started = time.perf_counter()
-    variant = req.model_variant if req.model_variant in MODEL_VARIANTS else "finetuned"
+    variant = _resolve_variant_or_default(req.model_variant)
 
     try:
         answer_text = _run_chat_inference(

@@ -611,6 +611,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   final TextEditingController _baseUrlController = TextEditingController(
     text: 'http://10.0.2.2:8000',
   );
+  final TextEditingController _apiKeyController = TextEditingController();
   final VideoPoseAnalyzer _videoPoseAnalyzer = VideoPoseAnalyzer();
   final MediaInputService _mediaInputService = MediaInputService();
   final TextEditingController _chatController = TextEditingController();
@@ -660,6 +661,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   @override
   void dispose() {
     _baseUrlController.dispose();
+    _apiKeyController.dispose();
     _chatController.dispose();
     _videoPoseAnalyzer.dispose();
     super.dispose();
@@ -715,6 +717,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     final repo = HttpFeedbackRepository(
       baseUrl: _baseUrlController.text.trim(),
       client: http.Client(),
+      apiKey: _apiKeyController.text.trim(),
     );
     return repo.generateFeedback(
       instruction: 'Give short corrective coaching feedback for this squat rep.',
@@ -735,6 +738,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     final repo = HttpFeedbackRepository(
       baseUrl: _baseUrlController.text.trim(),
       client: http.Client(),
+      apiKey: _apiKeyController.text.trim(),
     );
     final recentSummaries = _repFeedbacks
         .map((entry) => entry.input.summaryText)
@@ -1052,6 +1056,16 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             decoration: const InputDecoration(
               labelText: 'Backend Base URL',
               hintText: 'http://10.0.2.2:8000',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _apiKeyController,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'API Key (Optional)',
+              hintText: 'x-api-key value for protected backend',
               border: OutlineInputBorder(),
             ),
           ),

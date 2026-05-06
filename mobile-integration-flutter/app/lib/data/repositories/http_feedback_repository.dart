@@ -11,12 +11,25 @@ class HttpFeedbackRepository implements FeedbackRepository {
   final String baseUrl;
   final http.Client client;
   final Duration timeout;
+  final String? apiKey;
+  final String apiKeyHeader;
 
   HttpFeedbackRepository({
     required this.baseUrl,
     required this.client,
     this.timeout = const Duration(seconds: 360),
+    this.apiKey,
+    this.apiKeyHeader = 'x-api-key',
   });
+
+  Map<String, String> get _requestHeaders {
+    final headers = <String, String>{'Content-Type': 'application/json'};
+    final key = apiKey?.trim() ?? '';
+    if (key.isNotEmpty) {
+      headers[apiKeyHeader] = key;
+    }
+    return headers;
+  }
 
   @override
   Future<FeedbackResult> generateFeedback({
@@ -35,7 +48,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
     final response = await client
         .post(
           uri,
-          headers: {'Content-Type': 'application/json'},
+          headers: _requestHeaders,
           body: jsonEncode(body),
         )
         .timeout(timeout);
@@ -67,7 +80,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
     final response = await client
         .post(
           uri,
-          headers: {'Content-Type': 'application/json'},
+          headers: _requestHeaders,
           body: jsonEncode(body),
         )
         .timeout(timeout);
