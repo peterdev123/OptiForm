@@ -164,6 +164,16 @@ Follow the interactive prompts to:
 - View real-time analysis
 - Save output video (optional)
 
+## Presentation Readiness Checklist
+
+Before your thesis/demo presentation:
+
+- Confirm app startup works: `streamlit run app.py`
+- Verify `Live Stream` and `Upload Video` pages both load
+- Prepare one backup sample squat video for offline fallback
+- If LLM model checkpoints are unavailable, present core pose-analysis features only
+- Keep your demo flow short (body type -> mode -> analysis -> feedback)
+
 ## GPU Support (Optional)
 
 For faster LLM inference, enable GPU support:
