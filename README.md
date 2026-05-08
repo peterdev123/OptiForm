@@ -259,3 +259,7 @@ ports:
 
 **Note**: This project is part of a research thesis on AI-powered fitness training. For academic use, please cite appropriately.
 
+## Update Log
+
+- 2026-05-08: Small README update for GitHub activity tracking.
+
