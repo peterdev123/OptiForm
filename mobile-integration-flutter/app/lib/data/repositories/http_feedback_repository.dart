@@ -49,7 +49,6 @@ class HttpFeedbackRepository implements FeedbackRepository {
         'Feedback API failed (${response.statusCode}): ${response.body}',
       );
     }
-
     final payload = jsonDecode(response.body) as Map<String, dynamic>;
     return FeedbackResult.fromJson(payload);
   }
@@ -67,7 +66,7 @@ class HttpFeedbackRepository implements FeedbackRepository {
       'recent_rep_summaries': recentRepSummaries,
       'model_variant': modelVariant,
     };
-
+// TODO: add logging
     final response = await client
         .post(
           uri,
