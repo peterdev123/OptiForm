@@ -44,7 +44,7 @@ bool _isLikelyInlineAppMessage(String raw) {
 String _friendlyTechnicalSummary(String raw) {
   final lower = raw.toLowerCase();
   if (lower.contains('timeouterror') || lower.contains('timeoutexception')) {
-    return 'The request timed out. Check your connection and backend URL, then try again.';
+    return 'The request timed out. Check your connection, then try again.';
   }
   if (lower.contains('socketexception') ||
       lower.contains('failed host lookup') ||
