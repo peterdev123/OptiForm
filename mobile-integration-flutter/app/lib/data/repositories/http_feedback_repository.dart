@@ -7,6 +7,13 @@ import '../../domain/models/feedback_result.dart';
 import '../../domain/models/squat_prompt_input.dart';
 import '../../domain/repositories/feedback_repository.dart';
 
+enum BackendReadiness {
+  checking,
+  ready,
+  warmingUp,
+  unreachable,
+}
+
 class HttpFeedbackRepository implements FeedbackRepository {
   final String baseUrl;
   final http.Client client;
@@ -21,6 +28,34 @@ class HttpFeedbackRepository implements FeedbackRepository {
   static const Map<String, String> _jsonHeaders = {
     'Content-Type': 'application/json',
   };
+
+  static const Duration _healthCheckTimeout = Duration(seconds: 8);
+
+  Future<BackendReadiness> checkReadiness() async {
+    try {
+      final healthUri = Uri.parse('$baseUrl/health');
+      final healthResponse = await client
+          .get(healthUri)
+          .timeout(_healthCheckTimeout);
+      if (healthResponse.statusCode < 200 || healthResponse.statusCode >= 300) {
+        return BackendReadiness.unreachable;
+      }
+
+      final readyUri = Uri.parse('$baseUrl/health/ready');
+      final readyResponse = await client
+          .get(readyUri)
+          .timeout(_healthCheckTimeout);
+      if (readyResponse.statusCode == 200) {
+        return BackendReadiness.ready;
+      }
+      if (readyResponse.statusCode == 503) {
+        return BackendReadiness.warmingUp;
+      }
+      return BackendReadiness.unreachable;
+    } catch (_) {
+      return BackendReadiness.unreachable;
+    }
+  }
 
   @override
   Future<FeedbackResult> generateFeedback({

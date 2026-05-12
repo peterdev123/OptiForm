@@ -69,6 +69,45 @@ String _errorSummaryForDisplay(Object error) {
   return _friendlyTechnicalSummary(raw);
 }
 
+String _backendStatusLabel(BackendReadiness status) {
+  switch (status) {
+    case BackendReadiness.checking:
+      return 'Checking coaching server…';
+    case BackendReadiness.ready:
+      return 'Coaching server ready';
+    case BackendReadiness.warmingUp:
+      return 'Server warming up';
+    case BackendReadiness.unreachable:
+      return 'Coaching server unreachable';
+  }
+}
+
+Color _backendStatusColor(BackendReadiness status, ColorScheme scheme) {
+  switch (status) {
+    case BackendReadiness.checking:
+      return scheme.onSurfaceVariant;
+    case BackendReadiness.ready:
+      return Colors.green;
+    case BackendReadiness.warmingUp:
+      return Colors.orange;
+    case BackendReadiness.unreachable:
+      return scheme.error;
+  }
+}
+
+IconData _backendStatusIcon(BackendReadiness status) {
+  switch (status) {
+    case BackendReadiness.checking:
+      return Icons.sync_outlined;
+    case BackendReadiness.ready:
+      return Icons.cloud_done_outlined;
+    case BackendReadiness.warmingUp:
+      return Icons.hourglass_top_outlined;
+    case BackendReadiness.unreachable:
+      return Icons.cloud_off_outlined;
+  }
+}
+
 void main() {
   // Silence Dart-side terminal logs from app/framework/plugins.
   debugPrint = (String? _, {int? wrapWidth}) {};
@@ -631,10 +670,12 @@ enum _VideoInputSource { camera, gallery }
 
 class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   final GlobalKey _errorBannerKey = GlobalKey();
+  final GlobalKey _resultsSectionKey = GlobalKey();
 
   final VideoPoseAnalyzer _videoPoseAnalyzer = VideoPoseAnalyzer();
   final MediaInputService _mediaInputService = MediaInputService();
   final TextEditingController _chatController = TextEditingController();
+  final http.Client _httpClient = http.Client();
   String _bodyType = 'N/A';
   XFile? _selectedVideo;
   _VideoInputSource? _selectedVideoSource;
@@ -649,6 +690,9 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   FeedbackResult? _result;
   bool _chatLoading = false;
   final List<_ChatMessageEntry> _chatMessages = [];
+  BackendReadiness _backendStatus = BackendReadiness.checking;
+  bool _checkingBackend = false;
+  String? _analysisSummary;
   bool get _hasSelectedBodyType => _bodyType != 'N/A';
 
   void _setAnalyzeError(Object error) {
@@ -673,15 +717,57 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     });
   }
 
+  void _scheduleScrollResultsIntoView() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _resultsSectionKey.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.08,
+        duration: const Duration(milliseconds: 360),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
+  Future<void> _refreshBackendStatus() async {
+    if (_checkingBackend) return;
+    setState(() {
+      _checkingBackend = true;
+      _backendStatus = BackendReadiness.checking;
+    });
+    final repo = HttpFeedbackRepository(
+      baseUrl: widget.backendUrl,
+      client: _httpClient,
+    );
+    final status = await repo.checkReadiness();
+    if (!mounted) return;
+    setState(() {
+      _backendStatus = status;
+      _checkingBackend = false;
+    });
+  }
+
   @override
   void initState() {
     super.initState();
+    _refreshBackendStatus();
+  }
+
+  @override
+  void didUpdateWidget(covariant FeedbackDemoPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.backendUrl != widget.backendUrl) {
+      _refreshBackendStatus();
+    }
   }
 
   @override
   void dispose() {
     _chatController.dispose();
     _videoPoseAnalyzer.dispose();
+    _httpClient.close();
     super.dispose();
   }
 
@@ -734,7 +820,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
   Future<FeedbackResult> _generateFeedbackForInput(SquatPromptInput input) async {
     final repo = HttpFeedbackRepository(
       baseUrl: widget.backendUrl,
-      client: http.Client(),
+      client: _httpClient,
     );
     return repo.generateFeedback(
       instruction: 'Give short corrective coaching feedback for this squat rep.',
@@ -754,7 +840,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
 
     final repo = HttpFeedbackRepository(
       baseUrl: widget.backendUrl,
-      client: http.Client(),
+      client: _httpClient,
     );
     final recentSummaries = _repFeedbacks
         .map((entry) => entry.input.summaryText)
@@ -819,6 +905,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       _videoProgress = 0;
       _error = null;
       _result = null;
+      _analysisSummary = null;
       _repFeedbacks.clear();
       _debugSnapshots = const [];
     });
@@ -850,16 +937,27 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         });
       }
       if (analysis.reps.isNotEmpty) {
+        final acceptableCount = analysis.reps.where((rep) => rep.acceptable).length;
+        final topIssue = _topIssueFromReps(analysis.reps);
         await widget.onSessionRecorded?.call(
           SessionHistoryEntry(
             createdAtIso: DateTime.now().toIso8601String(),
             source: 'upload_video',
             bodyType: _bodyType,
             repCount: analysis.reps.length,
-            acceptableCount: analysis.reps.where((rep) => rep.acceptable).length,
-            topIssue: _topIssueFromReps(analysis.reps),
+            acceptableCount: acceptableCount,
+            topIssue: topIssue,
           ),
         );
+        if (mounted) {
+          setState(() {
+            _analysisSummary =
+                'Finished ${analysis.reps.length} rep${analysis.reps.length == 1 ? '' : 's'} '
+                '($acceptableCount acceptable). Top correction: $topIssue.';
+          });
+          HapticFeedback.mediumImpact();
+          _scheduleScrollResultsIntoView();
+        }
       }
       if (analysis.reps.isEmpty && mounted) {
         _setAnalyzeError(
@@ -924,7 +1022,12 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             },
           ),
         ),
-      if (_result != null) _buildLatestFeedbackSection(context),
+      if (_analysisSummary != null) _buildAnalysisSummarySection(context),
+      if (_result != null)
+        KeyedSubtree(
+          key: _resultsSectionKey,
+          child: _buildLatestFeedbackSection(context),
+        ),
       if (_repFeedbacks.isNotEmpty) ..._buildPerRepFeedbackSection(context),
       _buildCoachChatSection(context),
       if (_debugSnapshots.isNotEmpty) _buildVisualCheckSection(context),
@@ -933,6 +1036,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
 
   Widget _buildHeaderSection(BuildContext context) {
     final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return OptiCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -958,7 +1062,51 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
                 text: _hasSelectedBodyType ? 'Body type set' : 'Body type required',
                 accent: _hasSelectedBodyType ? Colors.green : Colors.orange,
               ),
+              _InfoPill(
+                icon: _backendStatusIcon(_backendStatus),
+                text: _backendStatusLabel(_backendStatus),
+                accent: _backendStatusColor(_backendStatus, colors),
+                onTap: _checkingBackend ? null : _refreshBackendStatus,
+              ),
             ],
+          ),
+          if (_backendStatus == BackendReadiness.unreachable) ...[
+            const SizedBox(height: 10),
+            Text(
+              'AI feedback and coach chat need the backend. Open Settings to confirm the URL, '
+              'then tap the server status pill to retry.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ] else if (_backendStatus == BackendReadiness.warmingUp) ...[
+            const SizedBox(height: 10),
+            Text(
+              'The server is reachable but the model is still loading. Wait a moment, then tap the status pill to retry.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAnalysisSummarySection(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return OptiCard(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.check_circle_outline, color: colors.primary, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Analysis complete', style: theme.textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(_analysisSummary!, style: theme.textTheme.bodySmall),
+              ],
+            ),
           ),
         ],
       ),
@@ -1470,17 +1618,19 @@ class _InfoPill extends StatelessWidget {
     required this.icon,
     required this.text,
     this.accent,
+    this.onTap,
   });
 
   final IconData icon;
   final String text;
   final Color? accent;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final color = accent ?? theme.colorScheme.primary;
-    return Container(
+    final child = Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
@@ -1499,6 +1649,15 @@ class _InfoPill extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+    if (onTap == null) return child;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: child,
       ),
     );
   }

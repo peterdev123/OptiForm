@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../data/repositories/http_feedback_repository.dart';
 import '../../widgets/opti_card.dart';
 
 const String kBackendUrlPrefKey = 'optiform_backend_url_v1';
@@ -17,8 +19,11 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _urlController;
+  final http.Client _httpClient = http.Client();
   bool _saving = false;
   String? _savedMessage;
+  BackendReadiness _backendStatus = BackendReadiness.checking;
+  bool _checkingBackend = false;
 
   @override
   void initState() {
@@ -33,6 +38,25 @@ class _SettingsPageState extends State<SettingsPage> {
     if (!mounted) return;
     setState(() {
       _urlController.text = saved;
+    });
+    await _refreshBackendStatus();
+  }
+
+  Future<void> _refreshBackendStatus() async {
+    if (_checkingBackend) return;
+    setState(() {
+      _checkingBackend = true;
+      _backendStatus = BackendReadiness.checking;
+    });
+    final repo = HttpFeedbackRepository(
+      baseUrl: _urlController.text.trim(),
+      client: _httpClient,
+    );
+    final status = await repo.checkReadiness();
+    if (!mounted) return;
+    setState(() {
+      _backendStatus = status;
+      _checkingBackend = false;
     });
   }
 
@@ -51,6 +75,8 @@ class _SettingsPageState extends State<SettingsPage> {
       _saving = false;
       _savedMessage = 'Saved.';
     });
+    await _refreshBackendStatus();
+    if (!mounted) return;
     await Future.delayed(const Duration(seconds: 2));
     if (mounted) setState(() => _savedMessage = null);
   }
@@ -58,7 +84,47 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     _urlController.dispose();
+    _httpClient.close();
     super.dispose();
+  }
+
+  String _backendStatusLabel(BackendReadiness status) {
+    switch (status) {
+      case BackendReadiness.checking:
+        return 'Checking connection…';
+      case BackendReadiness.ready:
+        return 'Connected and ready for AI coaching';
+      case BackendReadiness.warmingUp:
+        return 'Connected — model is still warming up';
+      case BackendReadiness.unreachable:
+        return 'Could not reach this backend URL';
+    }
+  }
+
+  Color _backendStatusColor(BackendReadiness status, ColorScheme scheme) {
+    switch (status) {
+      case BackendReadiness.checking:
+        return scheme.onSurfaceVariant;
+      case BackendReadiness.ready:
+        return Colors.green;
+      case BackendReadiness.warmingUp:
+        return Colors.orange;
+      case BackendReadiness.unreachable:
+        return scheme.error;
+    }
+  }
+
+  IconData _backendStatusIcon(BackendReadiness status) {
+    switch (status) {
+      case BackendReadiness.checking:
+        return Icons.sync_outlined;
+      case BackendReadiness.ready:
+        return Icons.cloud_done_outlined;
+      case BackendReadiness.warmingUp:
+        return Icons.hourglass_top_outlined;
+      case BackendReadiness.unreachable:
+        return Icons.cloud_off_outlined;
+    }
   }
 
   @override
@@ -120,6 +186,40 @@ class _SettingsPageState extends State<SettingsPage> {
                   Text(
                     'Use your PC\'s hotspot IP, e.g. http://192.168.43.25:8000',
                     style: theme.textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _backendStatusColor(_backendStatus, colors)
+                          .withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          _backendStatusIcon(_backendStatus),
+                          size: 18,
+                          color: _backendStatusColor(_backendStatus, colors),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _backendStatusLabel(_backendStatus),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: _backendStatusColor(_backendStatus, colors),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _checkingBackend ? null : _refreshBackendStatus,
+                          child: Text(_checkingBackend ? 'Checking…' : 'Retry'),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 14),
                   SizedBox(
