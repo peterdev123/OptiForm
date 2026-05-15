@@ -7,7 +7,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:app/main.dart';
+import 'package:optiform/main.dart';
 
 void main() {
   testWidgets('Feedback demo screen renders', (WidgetTester tester) async {
