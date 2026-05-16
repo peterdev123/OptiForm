@@ -454,7 +454,7 @@ class _BottomCtaCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 14),
                     Text(
-                      'Pose analysis runs on your device. Connect your coaching server in Settings when you are ready.',
+                      'Set your coaching server in Settings when ready.',
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.62),
                         fontSize: 12,

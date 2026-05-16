@@ -368,7 +368,7 @@ class IntroHomePage extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Track squat quality with clean rep analysis, practical feedback, and progress you can review anytime.',
+                    'Rep-level squat feedback you can review anytime.',
                     style: theme.textTheme.bodyMedium,
                   ),
                 ],
@@ -384,22 +384,22 @@ class IntroHomePage extends StatelessWidget {
                   _IntroStep(
                     number: '1',
                     title: 'Choose body type',
-                    description: 'Select your body profile so analysis uses the right movement thresholds.',
+                    description: 'Match analysis to how you are built.',
                   ),
                   _IntroStep(
                     number: '2',
                     title: 'Upload your set',
-                    description: 'Analyze a side-view squat video from camera capture or your files/gallery.',
+                    description: 'Side-view video from camera or gallery.',
                   ),
                   _IntroStep(
                     number: '3',
                     title: 'Get rep insights',
-                    description: 'OptiForm detects landmarks, counts reps, and flags form issues per rep.',
+                    description: 'See flags and coaching for each rep.',
                   ),
                   _IntroStep(
                     number: '4',
                     title: 'Refine technique',
-                    description: 'Review feedback, visual checks, and coaching chat suggestions.',
+                    description: 'Review feedback and ask the coach.',
                   ),
                 ],
               ),
@@ -425,8 +425,7 @@ class IntroHomePage extends StatelessWidget {
                   ),
                   _ChecklistItem(
                     icon: Icons.cloud_outlined,
-                    text:
-                        'For AI coaching, keep your backend reachable (same Wi‑Fi or correct URL).',
+                    text: 'Same Wi‑Fi as your coaching server for AI feedback',
                   ),
                 ],
               ),
@@ -527,7 +526,7 @@ class HistoryPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Progress History')),
+      appBar: AppBar(title: const Text('History')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         child: entries.isEmpty
@@ -545,7 +544,7 @@ class HistoryPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Run your first analysis from the Analyze tab to start tracking trends and rep quality over time.',
+                      'Analyze a squat set to see it here.',
                       style: theme.textTheme.bodySmall,
                     ),
                   ],
@@ -554,7 +553,7 @@ class HistoryPage extends StatelessWidget {
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Recent sessions', style: theme.textTheme.titleMedium),
+                  Text('Sessions', style: theme.textTheme.titleMedium),
                   const SizedBox(height: 10),
                   ...entries.map((entry) {
                     final when = DateTime.tryParse(entry.createdAtIso);
@@ -592,7 +591,7 @@ class HistoryPage extends StatelessWidget {
                             ],
                           ),
                           const SizedBox(height: 10),
-                          Text('Top correction: ${entry.topIssue}', style: theme.textTheme.bodyMedium),
+                          Text('Focus: ${entry.topIssue}', style: theme.textTheme.bodyMedium),
                         ],
                       ),
                     );
@@ -781,21 +780,18 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const ListTile(
-                title: Text('Choose video source'),
-                subtitle: Text('Record now or choose an existing squat video'),
+                title: Text('Video source'),
               ),
               ListTile(
                 leading: const Icon(Icons.videocam_outlined),
-                title: const Text('Record with camera'),
-                subtitle: const Text('Capture a new squat set'),
+                title: const Text('Record'),
                 onTap: () {
                   Navigator.of(sheetContext).pop(_VideoInputSource.camera);
                 },
               ),
               ListTile(
                 leading: const Icon(Icons.folder_outlined),
-                title: const Text('Choose from files/gallery'),
-                subtitle: const Text('Pick an existing video from this device'),
+                title: const Text('Gallery / files'),
                 onTap: () {
                   Navigator.of(sheetContext).pop(_VideoInputSource.gallery);
                 },
@@ -859,7 +855,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           _ChatMessageEntry(
             isUser: false,
             text: chatResult.answerText,
-            meta: _chatMeta(chatResult),
+            meta: null,
           ),
         );
       });
@@ -883,15 +879,10 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     }
   }
 
-  String _chatMeta(ChatResult result) {
-    if (result.latencyMs == null) return 'Model: ${result.modelName}';
-    return 'Model: ${result.modelName} | ${result.latencyMs} ms';
-  }
-
   Future<void> _analyzeSelectedVideo() async {
     if (!_hasSelectedBodyType) {
       _setAnalyzeError(
-        'Body Type is required. Please select one before analysis.',
+        'Select a body type first.',
       );
       return;
     }
@@ -1006,9 +997,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       _buildHeaderSection(context),
       if (_isLoading || _analyzingVideo) _buildAnalysisProgressStrip(context),
       _buildConfigSection(context),
-      _buildPrivacyFootnote(context),
       if (!kIsWeb) _buildCaptureSection(context),
-      _buildFlowSection(context),
       if (_error != null)
         KeyedSubtree(
           key: _errorBannerKey,
@@ -1041,11 +1030,10 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Analyze Session', style: theme.textTheme.titleLarge),
+          Text('Analyze', style: theme.textTheme.titleLarge),
           const SizedBox(height: 6),
           Text(
-            'Upload a squat set to get rep-level form feedback. '
-            'Use a stable side view and good lighting for best results.',
+            'Side-view video, full body in frame, steady camera.',
             style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -1054,12 +1042,8 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             runSpacing: 8,
             children: [
               _InfoPill(
-                icon: Icons.route_outlined,
-                text: 'Mode: Upload Video',
-              ),
-              _InfoPill(
                 icon: _hasSelectedBodyType ? Icons.check_circle_outline : Icons.error_outline,
-                text: _hasSelectedBodyType ? 'Body type set' : 'Body type required',
+                text: _hasSelectedBodyType ? 'Body type set' : 'Set body type',
                 accent: _hasSelectedBodyType ? Colors.green : Colors.orange,
               ),
               _InfoPill(
@@ -1071,16 +1055,15 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
             ],
           ),
           if (_backendStatus == BackendReadiness.unreachable) ...[
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Text(
-              'AI feedback and coach chat need the backend. Open Settings to confirm the URL, '
-              'then tap the server status pill to retry.',
+              'Set the server URL in Settings, then tap status to retry.',
               style: theme.textTheme.bodySmall,
             ),
           ] else if (_backendStatus == BackendReadiness.warmingUp) ...[
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Text(
-              'The server is reachable but the model is still loading. Wait a moment, then tap the status pill to retry.',
+              'Server loading — tap status to retry.',
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -1121,7 +1104,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            _analyzingVideo ? 'Analyzing video frames…' : 'Working…',
+            _analyzingVideo ? 'Analyzing…' : 'Working…',
             style: Theme.of(context).textTheme.labelLarge,
           ),
           const SizedBox(height: 8),
@@ -1136,7 +1119,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           if (_analyzingVideo) ...[
             const SizedBox(height: 6),
             Text(
-              '${(100 * _videoProgress).round()}% · pose + reps on device',
+              '${(100 * _videoProgress).round()}%',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -1145,31 +1128,10 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     );
   }
 
-  Widget _buildPrivacyFootnote(BuildContext context) {
-    final theme = Theme.of(context);
-    return OptiCard(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.shield_outlined, size: 22, color: theme.colorScheme.primary),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'Video and pose landmarks are processed on this device. '
-              'AI feedback and coach chat send rep summaries to the backend — use a network you trust. '
-              'Change the backend URL in the Settings tab.',
-              style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildSectionHeader(
     BuildContext context, {
     required String title,
-    required String subtitle,
+    String? subtitle,
     IconData? icon,
   }) {
     final theme = Theme.of(context);
@@ -1195,8 +1157,10 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(title, style: theme.textTheme.titleMedium),
-                const SizedBox(height: 2),
-                Text(subtitle, style: theme.textTheme.bodySmall),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: theme.textTheme.bodySmall),
+                ],
               ],
             ),
           ),
@@ -1212,14 +1176,13 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         children: [
           _buildSectionHeader(
             context,
-            title: 'Configuration',
-            subtitle: 'Set body profile. Change backend URL in Settings.',
+            title: 'Body type',
             icon: Icons.tune,
           ),
           DropdownButtonFormField<String>(
             initialValue: _bodyType,
             decoration: const InputDecoration(
-              labelText: 'Body Type (Required)',
+              labelText: 'Body type',
               border: OutlineInputBorder(),
             ),
             items: const [
@@ -1250,7 +1213,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           if (!_hasSelectedBodyType) ...[
             const SizedBox(height: 6),
             Text(
-              'Select a body type to proceed with video analysis.',
+              'Required before analysis.',
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ],
@@ -1266,13 +1229,12 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         children: [
           _buildSectionHeader(
             context,
-            title: 'Input Source',
-            subtitle: 'Record or pick a squat video for analysis',
+            title: 'Video',
             icon: Icons.video_camera_back_outlined,
           ),
           SizedBox(
             child: OptiButton(
-              label: _selectedVideo == null ? 'Pick Squat Video' : 'Video Selected',
+              label: _selectedVideo == null ? 'Choose video' : 'Change video',
               variant: OptiButtonVariant.outlined,
               onPressed: _isLoading || _analyzingVideo ? null : _pickVideo,
             ),
@@ -1280,50 +1242,20 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           if (_selectedVideo != null) ...[
             const SizedBox(height: 4),
             Text(
-              'Selected video: ${_selectedVideo!.name}',
+              _selectedVideo!.name,
               style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Source: ${_selectedVideoSource == _VideoInputSource.camera ? 'Camera capture' : 'Files/Gallery'}',
-              style: Theme.of(context).textTheme.bodySmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 8),
             SizedBox(
               child: OptiButton(
                 onPressed: _isLoading ? null : _analyzeSelectedVideo,
                 label: _analyzingVideo
-                    ? 'Analyzing video... ${(100 * _videoProgress).round()}%'
-                    : 'Analyze Uploaded Video',
+                    ? 'Analyzing ${(100 * _videoProgress).round()}%'
+                    : 'Analyze',
                 loading: _isLoading && _selectedVideo != null,
               ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFlowSection(BuildContext context) {
-    return OptiCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildSectionHeader(
-            context,
-            title: 'Pipeline',
-            subtitle: 'Pose extraction -> rep detection -> AI feedback',
-            icon: Icons.account_tree_outlined,
-          ),
-          Text(
-            'Flow: Upload video -> on-device metrics (body-type thresholds) -> feedback per rep.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          if (_lastBuiltInput != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Last Summary: ${_lastBuiltInput!.summaryText}',
-              style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
         ],
@@ -1339,15 +1271,9 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         children: [
           _buildSectionHeader(
             context,
-            title: 'Latest Feedback',
-            subtitle: 'Most recent model output for your current rep',
+            title: 'Coaching',
             icon: Icons.auto_awesome_outlined,
           ),
-          Text(
-            'Model: ${_result!.modelName}',
-            style: theme.textTheme.bodySmall,
-          ),
-          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -1364,10 +1290,6 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
           ),
           const SizedBox(height: 8),
           Text(_result!.feedbackText),
-          if (_result!.latencyMs != null) ...[
-            const SizedBox(height: 8),
-            Text('Latency: ${_result!.latencyMs} ms'),
-          ],
         ],
       ),
     );
@@ -1377,7 +1299,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
     return [
       const SizedBox(height: 4),
       Text(
-        'Per-rep feedback',
+        'By rep',
         style: Theme.of(context).textTheme.titleMedium,
       ),
       const SizedBox(height: 8),
@@ -1415,8 +1337,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         children: [
           _buildSectionHeader(
             context,
-            title: 'Coach Chat',
-            subtitle: 'Ask about movement patterns and practical corrections',
+            title: 'Ask coach',
             icon: Icons.chat_bubble_outline,
           ),
           TextField(
@@ -1430,7 +1351,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
               }
             },
             decoration: InputDecoration(
-              hintText: 'e.g., Why were my last reps flagged for knees forward?',
+              hintText: 'e.g. How do I fix heel lift?',
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
                 onPressed: _chatLoading ? null : _sendChatQuestion,
@@ -1485,8 +1406,7 @@ class _FeedbackDemoPageState extends State<FeedbackDemoPage> {
         children: [
           _buildSectionHeader(
             context,
-            title: 'Pose Landmark Check',
-            subtitle: 'Frame snapshots with landmark overlays for quick validation',
+            title: 'Form check',
             icon: Icons.visibility_outlined,
           ),
           ..._debugSnapshots.map(
@@ -1676,7 +1596,7 @@ class _PoseDebugCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Rep ${snapshot.repNumber} - Frame @ ${snapshot.timeMs} ms (${snapshot.side} side)'),
+            Text('Rep ${snapshot.repNumber} · ${snapshot.side} side'),
             const SizedBox(height: 8),
             AspectRatio(
               aspectRatio: snapshot.imageSize.width / snapshot.imageSize.height,

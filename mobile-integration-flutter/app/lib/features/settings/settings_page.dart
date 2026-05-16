@@ -93,11 +93,11 @@ class _SettingsPageState extends State<SettingsPage> {
       case BackendReadiness.checking:
         return 'Checking connection…';
       case BackendReadiness.ready:
-        return 'Connected and ready for AI coaching';
+        return 'Connected';
       case BackendReadiness.warmingUp:
-        return 'Connected — model is still warming up';
+        return 'Loading model…';
       case BackendReadiness.unreachable:
-        return 'Could not reach this backend URL';
+        return 'Not reachable';
     }
   }
 
@@ -159,12 +159,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Backend Connection', style: theme.textTheme.titleMedium),
-                            const SizedBox(height: 2),
-                            Text(
-                              'Set the URL of your local AI backend server.',
-                              style: theme.textTheme.bodySmall,
-                            ),
+                            Text('Coaching server', style: theme.textTheme.titleMedium),
                           ],
                         ),
                       ),
@@ -176,7 +171,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     keyboardType: TextInputType.url,
                     autocorrect: false,
                     decoration: const InputDecoration(
-                      labelText: 'Backend Base URL',
+                      labelText: 'Server URL',
                       hintText: 'http://192.168.x.x:8000',
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.link),
@@ -184,7 +179,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Use your PC\'s hotspot IP, e.g. http://192.168.43.25:8000',
+                    'Same Wi‑Fi as your PC running the API.',
                     style: theme.textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
                   ),
                   const SizedBox(height: 14),
@@ -269,37 +264,21 @@ class _SettingsPageState extends State<SettingsPage> {
                         child: Icon(Icons.info_outline, size: 16, color: colors.primary),
                       ),
                       const SizedBox(width: 10),
-                      Text('How to connect', style: theme.textTheme.titleMedium),
+                      Text('Quick setup', style: theme.textTheme.titleMedium),
                     ],
                   ),
                   const SizedBox(height: 12),
                   _Step(
                     number: '1',
-                    text: 'Enable a mobile hotspot on any phone/device.',
+                    text: 'PC and phone on the same Wi‑Fi (or phone hotspot).',
                   ),
                   _Step(
                     number: '2',
-                    text: 'Connect your backend PC to that hotspot Wi‑Fi.',
+                    text: 'Start API on PC: uvicorn app:app --host 0.0.0.0 --port 8000',
                   ),
                   _Step(
                     number: '3',
-                    text:
-                        'Find the PC\'s hotspot IP — run ipconfig (Windows) '
-                        'and look for the IPv4 address under Wi‑Fi.',
-                  ),
-                  _Step(
-                    number: '4',
-                    text: 'Start the backend: uvicorn app:app --host 0.0.0.0 --port 8000',
-                  ),
-                  _Step(
-                    number: '5',
-                    text: 'Enter http://<PC_IP>:8000 above and tap Save.',
-                  ),
-                  _Step(
-                    number: '6',
-                    text:
-                        'Verify: open http://<PC_IP>:8000/health/ready in phone browser — '
-                        'should return {"status":"ready"} once the model is loaded.',
+                    text: 'Enter http://<PC_IP>:8000 above, Save, then Retry.',
                   ),
                 ],
               ),
