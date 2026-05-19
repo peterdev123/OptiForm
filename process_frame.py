@@ -122,6 +122,7 @@ class ProcessFrame:
             'ankle': 0,
             'heel': 0
         }
+        #check if elbow flare angle is less than 25 degrees, if so, mark as elbow flaring
         self.rep_index = 0
         self.rep_summaries = []
         self.last_summary = None
